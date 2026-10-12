@@ -347,7 +347,7 @@ export function installSingleExecutionHooks() {
 		sendMessage?: (message: unknown, options: unknown) => void,
 	) {
 		return createSubagentExecutor!({
-			pi: { events: piEvents, getSessionName: () => undefined, ...(sendMessage ? { sendMessage } : {}) },
+			pi: { events: piEvents, getSessionName: () => undefined, appendEntry: () => {}, ...(sendMessage ? { sendMessage } : {}) },
 			...(childRuntime ? { childRuntime } : {}),
 			state: {
 				baseCwd: tempDir,

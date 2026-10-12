@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { applyJevPersona, selectJevCandidate, type JevRegistry } from "../../agents/jev-decisions.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -7449,7 +7450,31 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const effectiveCwd = effectiveParams.cwd ?? ctx.cwd;
 		const parentSessionFile = ctx.sessionManager.getSessionFile() ?? null;
 		const discovered = deps.discoverAgents(effectiveCwd, scope, requestParentModel?.provider);
-		const discoveredAgents = discovered.agents;
+		let discoveredAgents = discovered.agents;
+		try {
+			if (effectiveParams.tasks?.length || effectiveParams.chain?.length) throw new Error("Jev cutover chưa hỗ trợ composite launch trực tiếp; dùng workflow runs.run cho từng child.");
+			const decision = await selectJevCandidate(ctx.modelRegistry as unknown as JevRegistry, {
+				config: deps.config.jev!, agents: discoveredAgents,
+				models: ctx.modelRegistry.getAvailable().map(toModelInfo),
+				task: effectiveParams.task ?? "", ...(effectiveParams.agent ? { hint: effectiveParams.agent } : {}), signal,
+				allowed: (candidate) => {
+					try {
+						const ceiling = intersectSubagentCapabilityCeilings(intersectSubagentCapabilityCeilings(effectiveParams.capabilityCeiling, resolveCurrentSubagentCapabilityCeiling(requestSessionId)), deps.childRuntime?.capabilityCeiling);
+						assertAgentAllowedByCapabilityCeiling(candidate.agent, ceiling);
+						resolveEffectiveSubagentModel(candidate.model, undefined, requestParentModel, ctx.modelRegistry.getAvailable().map(toModelInfo), undefined, { scope: resolveModelScopesForAgent(discovered.modelScope, candidate.agent, requestParentModel, scopedModelIdsFromContext(ctx)), source: "explicit" });
+						return true;
+					} catch { return false; }
+				},
+			});
+			const selected = discoveredAgents.find((agent) => agent.name === decision.candidate.agent)!;
+			discoveredAgents = discoveredAgents.map((agent) => agent === selected ? applyJevPersona(agent, decision) : agent);
+			effectiveParams = { ...effectiveParams, agent: decision.candidate.agent, model: `${decision.candidate.model}:${decision.candidate.effort}` };
+			deps.pi.appendEntry("subagent-jev-decision", decision);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : "Jev decision thất bại.";
+			if (ctx.hasUI && !signal.aborted) await ctx.ui.select("Jev dừng launch — operator quyết định", ["Hủy launch; sửa cấu hình rồi gửi lại"]);
+			return buildRequestedModeError(effectiveParams, `${message} Cần operator xử lý; không fallback main agent.`);
+		}
 		const unknownAgentDiagnosticContext = diagnosticContextFromDiscovery(discovered, effectiveCwd, scope);
 		const canonicalParams = canonicalizeExecutionParams(effectiveParams, discoveredAgents, discovered.agentDiagnostics, unknownAgentDiagnosticContext);
 		if (canonicalParams.error) return buildRequestedModeError(effectiveParams, canonicalParams.error);
