@@ -2681,6 +2681,7 @@ export interface ActiveAsyncCapacityConfig {
 }
 
 export interface ExtensionConfig {
+	jev?: import("../agents/jev-decisions.ts").JevConfig;
 	asyncByDefault?: boolean;
 	/** Set the context for launches that omit an explicit context. */
 	defaultSubagentContext?: "fresh" | "fork";
