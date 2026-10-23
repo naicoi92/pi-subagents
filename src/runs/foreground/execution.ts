@@ -2,6 +2,7 @@
  * Core execution logic for running subagents
  */
 
+import { mergeRequiredChildExtensions, resolveRequiredChildExtensions } from "../../shared/required-child-extensions.ts";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
@@ -1736,6 +1737,7 @@ async function runSyncCompletionInner(
 		),
 	};
 	try {
+		options = { ...options, requiredExtensions: mergeRequiredChildExtensions(agent.requiredExtensions, options.requiredExtensions, options.childRuntime?.requiredExtensions, resolveRequiredChildExtensions(options.parentSessionId)) };
 		assertAgentAllowedByCapabilityCeiling(agent.name, options.capabilityCeiling);
 	} catch (error) {
 		return redactResultPrompt(withRunContext({

@@ -4,6 +4,7 @@ import { CODE_OWNED_EXTERNAL_CLI_ADAPTER_LABEL, isCodeOwnedExternalCliAdapterId,
 import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import { validatePermissionRules, type PermissionRules } from "../runs/shared/permissions.ts";
 import { validateToolBudgetConfig } from "../runs/shared/tool-budget.ts";
+import { snapshotRequiredChildExtensions, type RequiredChildExtension } from "../shared/required-child-extensions.ts";
 import { BUILTIN_AGENT_NAMES } from "./builtin-names.ts";
 import { applyRuntimeAgentSettings, type AgentConfig, type AgentDefaultContext, type AgentDiscoveryDiagnostic, type RuntimeAgentSettingsContext } from "./agents.ts";
 
@@ -41,6 +42,8 @@ export interface RuntimeAgentDefinition {
 	skillPath?: readonly string[];
 	extensions?: readonly string[];
 	subagentOnlyExtensions?: readonly string[];
+	/** Mandatory local native child helpers; incompatible ceilings and runners reject the launch. */
+	requiredExtensions?: readonly RequiredChildExtension[];
 	mutationTools?: readonly string[];
 	output?: string;
 	outputMode?: OutputMode;
@@ -201,7 +204,7 @@ function validateDefinition(value: unknown): RuntimeAgentDefinition {
 		"description", "systemPrompt", "aliases", "tools", "excludeTools", "allowNestedSubagents", "mcpDirectTools", "model", "thinking",
 		"systemPromptMode", "inheritProjectContext", "inheritGlobalContext", "inheritSkills", "defaultContext", "defaultAsync", "defaultTimeoutMs",
 		"defaultToolTimeoutMs", "defaultAcceptance", "acceptanceRole", "runner", "machine", "skills", "skillPath",
-		"extensions", "subagentOnlyExtensions", "mutationTools", "output", "outputMode", "defaultReads", "defaultProgress", "interactive",
+		"extensions", "subagentOnlyExtensions", "requiredExtensions", "mutationTools", "output", "outputMode", "defaultReads", "defaultProgress", "interactive",
 		"maxSubagentDepth", "toolBudget", "permissions",
 	]);
 	const unknown = Object.keys(definition).filter((key) => !supported.has(key));
@@ -235,6 +238,7 @@ function validateDefinition(value: unknown): RuntimeAgentDefinition {
 	const skillPath = validateStringList(definition.skillPath, "Runtime agent definition skillPath");
 	const extensions = validateStringList(definition.extensions, "Runtime agent definition extensions");
 	const subagentOnlyExtensions = validateStringList(definition.subagentOnlyExtensions, "Runtime agent definition subagentOnlyExtensions");
+	const requiredExtensions = definition.requiredExtensions === undefined ? undefined : snapshotRequiredChildExtensions(definition.requiredExtensions, "Runtime agent requiredExtensions", true);
 	const mutationTools = validateStringList(definition.mutationTools, "Runtime agent definition mutationTools");
 	const machine = validateOptionalString(definition.machine, "Runtime agent definition machine");
 	const output = validateOptionalString(definition.output, "Runtime agent definition output");
@@ -269,6 +273,7 @@ function validateDefinition(value: unknown): RuntimeAgentDefinition {
 		...(skillPath ? { skillPath } : {}),
 		...(extensions ? { extensions } : {}),
 		...(subagentOnlyExtensions ? { subagentOnlyExtensions } : {}),
+		...(requiredExtensions ? { requiredExtensions } : {}),
 		...(mutationTools ? { mutationTools } : {}),
 		...(machine ? { machine } : {}),
 		...(output ? { output } : {}),
@@ -350,6 +355,7 @@ function toAgentConfig(name: string, definition: RuntimeAgentDefinition): AgentC
 		...(definition.skillPath !== undefined ? { skillPath: [...definition.skillPath] } : {}),
 		...(definition.extensions !== undefined ? { extensions: [...definition.extensions] } : {}),
 		...(definition.subagentOnlyExtensions !== undefined ? { subagentOnlyExtensions: [...definition.subagentOnlyExtensions] } : {}),
+		...(definition.requiredExtensions !== undefined ? { requiredExtensions: Object.freeze(definition.requiredExtensions.map((entry) => Object.freeze({ ...entry, requireForAllRunners: true as const }))) } : {}),
 		...(definition.mutationTools !== undefined ? { mutationTools: [...definition.mutationTools] } : {}),
 		...(definition.machine !== undefined ? { machine: definition.machine } : {}),
 		...(definition.output !== undefined ? { output: definition.output } : {}),
