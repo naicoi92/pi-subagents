@@ -30,6 +30,7 @@ import { validateAcceptanceInput } from "../runs/shared/acceptance.ts";
 import { validatePermissionRules, type PermissionRules } from "../runs/shared/permissions.ts";
 import { parseThinkingLevel, type ThinkingLevel } from "../shared/thinking-ceiling.ts";
 import { assertJsonSchemaObject } from "../runs/shared/structured-output.ts";
+import type { RequiredChildExtensionSnapshot } from "../shared/required-child-extensions.ts";
 import { normalizeCapabilityCeilingAllowedAgents } from "../runs/shared/capability-ceiling.ts";
 
 export type AgentScope = "user" | "project" | "both";
@@ -173,6 +174,8 @@ export interface AgentConfig {
 	extensions?: string[];
 	extensionsFromDefault?: boolean;
 	subagentOnlyExtensions?: string[];
+	/** Extension-owned requirements, retained independently of optional extension overrides. */
+	requiredExtensions?: RequiredChildExtensionSnapshot;
 	mutationTools?: string[];
 	output?: string;
 	outputMode?: OutputMode;

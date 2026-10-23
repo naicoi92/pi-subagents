@@ -27,7 +27,7 @@ import { processTerminalCandidatePath, processTerminalPath } from "../runs/backg
 import { resultFilePath } from "../runs/background/result-files.ts";
 import { nestedResultsPath } from "../runs/shared/nested-events.ts";
 import { normalizeExtensionBindings, type ExtensionBindings } from "../runs/shared/extension-bindings.ts";
-import { assertRequiredChildExtensionsAdmitted, resolveRequiredChildExtensions } from "../shared/required-child-extensions.ts";
+import { assertRequiredChildExtensionsAdmitted, mergeRequiredChildExtensions, resolveRequiredChildExtensions } from "../shared/required-child-extensions.ts";
 
 // v3: the contract reports the resolved Intercom bridge state and binds its
 // prompt and tools into launchContractDigest, matching execution (#2127).
@@ -387,7 +387,7 @@ export async function resolveSubagentLaunchContract(input: SubagentLaunchContrac
 	const externalRunner = agent.runner?.type === "external-cli" || agent.runner?.type === "external-job";
 	// Machine placement has no preflight input; execution enforces it. Preview the runner-type admission here.
 	try {
-		assertRequiredChildExtensionsAdmitted([resolveRequiredChildExtensions(input.parentSessionId)], { agent: agent.name, runnerType: agent.runner?.type });
+		assertRequiredChildExtensionsAdmitted([agent.requiredExtensions, resolveRequiredChildExtensions(input.parentSessionId)], { agent: agent.name, runnerType: agent.runner?.type });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { ok: false, code: "unsupported_mode", message, diagnostics };
@@ -449,7 +449,7 @@ export async function resolveSubagentLaunchContract(input: SubagentLaunchContrac
 	let toolPlan: PiLaunchToolPlan;
 	const permissionRules = resolvePermissionRules(loadConfig().permissions, agent.permissions);
 	const fast = input.fast ?? agent.fast;
-	const requiredExtensions = externalRunner ? [] : resolveRequiredChildExtensions(input.parentSessionId);
+	const requiredExtensions = externalRunner ? [] : mergeRequiredChildExtensions(agent.requiredExtensions, resolveRequiredChildExtensions(input.parentSessionId));
 	try {
 		toolPlan = resolvePiLaunchToolPlan({
 			tools: agent.tools,

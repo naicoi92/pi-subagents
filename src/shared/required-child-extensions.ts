@@ -55,6 +55,23 @@ export function snapshotRequiredChildExtensions(value: unknown, label = "Require
 	}));
 }
 
+/** Compose independent authority carriers; no caller snapshot can erase another requirement. */
+export function mergeRequiredChildExtensions(...snapshots: (RequiredChildExtensionSnapshot | undefined)[]): RequiredChildExtensionSnapshot {
+	const byId = new Map<string, RequiredChildExtensionSnapshot[number]>();
+	const byPath = new Map<string, string>();
+	for (const snapshot of snapshots) {
+		for (const entry of snapshotRequiredChildExtensions(snapshot ?? [])) {
+			const previous = byId.get(entry.id);
+			if (previous && previous.path !== entry.path) throw new Error(`Required child extension id '${entry.id}' has conflicting paths.`);
+			const pathOwner = byPath.get(entry.path);
+			if (pathOwner && pathOwner !== entry.id) throw new Error(`Required child extension path '${entry.path}' has conflicting ids '${pathOwner}' and '${entry.id}'.`);
+			byId.set(entry.id, previous?.requireForAllRunners ? previous : entry);
+			byPath.set(entry.path, entry.id);
+		}
+	}
+	return byId.size ? Object.freeze([...byId.values()]) : EMPTY_SNAPSHOT;
+}
+
 interface Registry { version: 1; bySession: Map<string, RequiredChildExtensionSnapshot> }
 
 function registry(): Registry {
