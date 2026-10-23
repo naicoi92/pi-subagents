@@ -65,15 +65,36 @@ it("AC-2 composition rejects conflicting IDs or paths without weakening mandator
 	assert.throws(() => mergeRequiredChildExtensions(required, [{ id: "other", path: "/bound.mjs" }]), /conflicting ids/);
 });
 
-it("AC-5 async admission refuses per-agent helpers on external runners and machine placements", (t) => {
+it("AC-5 async admission refuses per-agent helpers on external runners", (t) => {
 	const f = fixture(t);
 	const handle = registerAgent({ pi: f.pi, name: "bounded-worker", definition: f.definition });
 	t.after(handle.dispose);
 	const [agent] = mergeRuntimeAgents(f.pi, { agents: [] }).agents;
-	for (const placement of [{ runner: { type: "external-cli" as const, adapter: "fixture" } }, { runner: { type: "external-job" as const, provider: "fixture" } }, { machine: "remote" }]) {
-		const built = buildAsyncRunnerSteps("per-agent", { chain: [{ agent: "bounded-worker", task: "Work." }], agents: [{ ...agent, ...placement }], ctx: { cwd: f.dir }, cwd: f.dir, asyncDir: f.dir, maxSubagentDepth: 1 });
+	for (const runner of [{ type: "external-cli" as const, adapter: "fixture" }, { type: "external-job" as const, provider: "fixture" }]) {
+		const built = buildAsyncRunnerSteps("per-agent", { chain: [{ agent: "bounded-worker", task: "Work." }], agents: [{ ...agent, runner }], ctx: { cwd: f.dir }, cwd: f.dir, asyncDir: f.dir, maxSubagentDepth: 1 });
 		assert.ok("error" in built);
-		if ("error" in built) assert.match(built.error, /cannot run.*requires child extensions.*worker-bound/);
+		if ("error" in built) {
+			assert.match(built.error, /cannot run.*requires child extensions.*worker-bound/);
+			assert.deepEqual(built, { error: built.error });
+		}
+	}
+});
+
+it("AC-5 async machine admission fails closed with the host platform's rejection reason", (t) => {
+	const f = fixture(t);
+	const handle = registerAgent({ pi: f.pi, name: "bounded-worker", definition: f.definition });
+	t.after(handle.dispose);
+	const [agent] = mergeRuntimeAgents(f.pi, { agents: [] }).agents;
+	const built = buildAsyncRunnerSteps("per-agent", { chain: [{ agent: "bounded-worker", task: "Work." }], agents: [{ ...agent, machine: "remote" }], ctx: { cwd: f.dir }, cwd: f.dir, asyncDir: f.dir, maxSubagentDepth: 1 });
+	assert.ok("error" in built);
+	if ("error" in built) {
+		// Windows rejects pane transport before mandatory-extension admission; neither path yields executable steps.
+		if (process.platform === "win32") {
+			assert.equal(built.error, "Herdr saved-machine pane transport requires hardened OpenSSH StreamLocal forwarding, which is not supported from a Windows host yet.");
+		} else {
+			assert.match(built.error, /cannot run.*requires child extensions.*worker-bound/);
+		}
+		assert.deepEqual(built, { error: built.error });
 	}
 });
 
