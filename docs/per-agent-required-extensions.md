@@ -34,5 +34,6 @@ No dependency version change, publication, Jev integration, host-cache changes o
 | AC-4 Retained serialization and recovery preserve requirements after disposal; effective denial still rejects | focused retained/recovery tests and real CLI smoke | Task: retained/recovery requirements cannot be lost |
 | AC-5 Unsupported runner/machine admission rejects, never silently drops per-agent requirements | per-agent unit/async admission tests | Task: strict nonnative admission; existing only-local-native loading contract |
 | AC-6 Native allowed child loads required helper before prompt, independently of optional extensions | real CLI smoke | Task: allowed required helper delivery |
+| AC-7 Current effective policy intersects trusted Pi session UUID and legacy file identity plus inherited/retained restrictions, without unrelated/disposed-session leakage | `current-session-capability-ceiling.test.ts`; real CLI four-path denial | Supervisor-approved narrow prerequisite after real CLI UUID-only registration exposed async admission mismatch |
 
 Each named test maps to the criterion named in its title or containing section. Focused suites, typecheck, build and native tool-activation smoke are bounded gates; the full cross-platform suite is not claimed. Exact commands, RED/GREEN results and any remaining gaps are reported in the implementation artifact.

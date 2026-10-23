@@ -58,12 +58,40 @@ it("AC-2 retained and inherited requirements compose with current global require
 	assert.deepEqual(launch.launchResolvedExtensions.required, ["worker-bound", "global"]);
 });
 
+it("AC-2 composition rejects conflicting IDs or paths without weakening mandatory flags", () => {
+	const required = [{ id: "bound", path: "/bound.mjs", requireForAllRunners: true as const }];
+	assert.deepEqual(mergeRequiredChildExtensions(required, [{ id: "bound", path: "/bound.mjs" }]), required);
+	assert.throws(() => mergeRequiredChildExtensions(required, [{ id: "bound", path: "/other.mjs" }]), /conflicting paths/);
+	assert.throws(() => mergeRequiredChildExtensions(required, [{ id: "other", path: "/bound.mjs" }]), /conflicting ids/);
+});
+
+it("AC-5 async admission refuses per-agent helpers on external runners and machine placements", (t) => {
+	const f = fixture(t);
+	const handle = registerAgent({ pi: f.pi, name: "bounded-worker", definition: f.definition });
+	t.after(handle.dispose);
+	const [agent] = mergeRuntimeAgents(f.pi, { agents: [] }).agents;
+	for (const placement of [{ runner: { type: "external-cli" as const, adapter: "fixture" } }, { runner: { type: "external-job" as const, provider: "fixture" } }, { machine: "remote" }]) {
+		const built = buildAsyncRunnerSteps("per-agent", { chain: [{ agent: "bounded-worker", task: "Work." }], agents: [{ ...agent, ...placement }], ctx: { cwd: f.dir }, cwd: f.dir, asyncDir: f.dir, maxSubagentDepth: 1 });
+		assert.ok("error" in built);
+		if ("error" in built) assert.match(built.error, /cannot run.*requires child extensions.*worker-bound/);
+	}
+});
+
+it("AC-4 serialized retained runner rejects denial after runtime registration disposal", (t) => {
+	const f = fixture(t);
+	const handle = registerAgent({ pi: f.pi, name: "bounded-worker", definition: f.definition });
+	const [agent] = mergeRuntimeAgents(f.pi, { agents: [] }).agents;
+	handle.dispose();
+	const step = JSON.parse(JSON.stringify({ agent: agent.name, task: "Work", extensions: [], requiredExtensions: agent.requiredExtensions }));
+	assert.throws(() => buildRunnerChildLaunch(step, { cwd: f.dir, id: "run", flatIndex: 0, inheritedChildRuntime: { capabilityCeiling: { version: 1, denyExtensions: true, sources: ["retained"] } } }, { sessionEnabled: false, watchdogStatus() {} }), /denies extensions.*requires: worker-bound/);
+});
+
 it("AC-3 async resolved plans preserve per-agent requirements with optional extensions empty", (t) => {
 	const f = fixture(t);
 	const handle = registerAgent({ pi: f.pi, name: "bounded-worker", definition: { ...f.definition, extensions: [], model: "mock/model" } });
 	t.after(handle.dispose);
 	const agents = mergeRuntimeAgents(f.pi, { agents: [] }).agents;
-	const built = buildAsyncRunnerSteps("per-agent", { chain: [{ agent: "bounded-worker", task: "Work." }], agents, ctx: { cwd: f.dir }, cwd: f.dir, maxSubagentDepth: 1 });
+	const built = buildAsyncRunnerSteps("per-agent", { chain: [{ agent: "bounded-worker", task: "Work." }], agents, ctx: { cwd: f.dir }, cwd: f.dir, asyncDir: f.dir, maxSubagentDepth: 1 });
 	assert.ok(!("error" in built), JSON.stringify(built));
 	if ("error" in built) return;
 	const step = built.steps[0];

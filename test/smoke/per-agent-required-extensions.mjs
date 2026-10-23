@@ -13,7 +13,7 @@ fs.mkdirSync(root, { recursive: true });
 assert.ok(!fs.existsSync(path.join(root, "node_modules")), "requires pristine owned fixture dependencies");
 for (const dir of ["home", "agent/extensions/subagent", "work"]) fs.mkdirSync(path.join(root, dir), { recursive: true });
 const env = { ...process.env, HOME: path.join(root, "home"), USERPROFILE: path.join(root, "home"), PI_CODING_AGENT_DIR: path.join(root, "agent"), XDG_CACHE_HOME: path.join(root, "cache"), npm_config_cache: path.join(root, "npm-cache"), NODE_COMPILE_CACHE: path.join(root, "node-cache"), JITI_FS_CACHE: "false", PI_OFFLINE: "1", PER_AGENT_SMOKE_ROOT: root };
-for (const key of Object.keys(env)) if (/API_KEY|TOKEN|SECRET|PASSWORD/.test(key) || ["NODE_OPTIONS", "NODE_PATH", "JITI_ALIAS"].includes(key)) delete env[key];
+for (const key of Object.keys(env)) if (/API_KEY|TOKEN|SECRET|PASSWORD|^PI_SUBAGENT|^PI_HERDR/.test(key) || ["NODE_OPTIONS", "NODE_PATH", "JITI_ALIAS"].includes(key)) delete env[key];
 function run(name, command, args, cwd = source) {
 	const result = spawnSync(command, args, { cwd, env, encoding: "utf8", timeout: 120000, maxBuffer: 10 * 1024 * 1024 });
 	fs.writeFileSync(path.join(root, `${name}.log`), `${result.stdout ?? ""}${result.stderr ?? ""}`);

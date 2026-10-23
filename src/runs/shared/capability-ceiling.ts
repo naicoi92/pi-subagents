@@ -174,6 +174,18 @@ export function resolveCurrentSubagentCapabilityCeiling(sessionId: string | unde
 	return resolveSubagentCapabilityCeiling(sessionId, undefined);
 }
 
+/** Resolve only identities supplied by the current trusted executor session context. */
+export function resolveCurrentSessionCapabilityCeiling(
+	sessionManager: { getSessionId(): string | null | undefined; getSessionFile(): string | null | undefined },
+	...retained: (ResolvedSubagentCapabilityCeiling | undefined)[]
+): ResolvedSubagentCapabilityCeiling | undefined {
+	return intersectSubagentCapabilityCeilings(
+		resolveCurrentSubagentCapabilityCeiling(sessionManager.getSessionId() ?? undefined),
+		resolveCurrentSubagentCapabilityCeiling(sessionManager.getSessionFile() ?? undefined),
+		...retained,
+	);
+}
+
 export function isAgentAllowedByCapabilityCeiling(agentName: string, ceiling: ResolvedSubagentCapabilityCeiling | undefined): boolean {
 	return ceiling?.allowedAgents === undefined || ceiling.allowedAgents.includes(agentName);
 }
