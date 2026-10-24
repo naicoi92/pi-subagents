@@ -76,9 +76,16 @@ export interface WorkerDecisionAuthority {
 export interface RegisterWorkerDecisionAuthorityInput {
 	sessionId: string;
 	lifetimeDeadline: number;
+	/** Owner's authoritative assessment budget; zero allows only unavailable-assessment handling. */
+	assessmentTimeoutMs: number;
 	authority: WorkerDecisionAuthority;
 }
 export interface WorkerDecisionAuthorityRegistration { readonly generation: string; dispose(): void }
+export type WorkerDecisionAuthoritySnapshot =
+	| { readonly kind: "never-owned" }
+	| { readonly kind: "active"; readonly generation: string; readonly lifetimeDeadline: number; readonly assessmentTimeoutMs: number }
+	| { readonly kind: "missing" }
+	| { readonly kind: "disposed" };
 
 /** Host callbacks must be side-effect-free: no child/session creation or inference. */
 export interface WorkerDecisionHost {
@@ -94,6 +101,7 @@ export interface WorkerDecisionClock {
 }
 export interface PrepareWorkerDecisionInput extends WorkerDecisionRequest {
 	sessionId: string;
+	/** Per-request tightening cap; cannot extend the registered owner's assessmentTimeoutMs. */
 	classifierTimeoutMs: number;
 	signal?: AbortSignal;
 	host: WorkerDecisionHost;
@@ -108,7 +116,7 @@ export type WorkerDecisionState =
 	| { readonly kind: "consumed"; readonly state: "pending" | "indeterminate" | "blocked" }
 	| { readonly kind: "committed"; readonly receipt: AppliedWorkerDecision };
 
-interface Owner { generation: string; lifetimeDeadline: number; authority: WorkerDecisionAuthority; controller: AbortController }
+interface Owner { generation: string; lifetimeDeadline: number; assessmentTimeoutMs: number; authority: WorkerDecisionAuthority; controller: AbortController }
 interface Entry {
 	binding: string;
 	state: "pending" | "indeterminate" | "blocked" | "committed";
@@ -219,15 +227,39 @@ function freeze<T>(value: T): T {
 export function registerWorkerDecisionAuthority(input: RegisterWorkerDecisionAuthorityInput): WorkerDecisionAuthorityRegistration {
 	assertId(input.sessionId);
 	if (!Number.isFinite(input.lifetimeDeadline)) throw new Error("Worker decision authority requires a finite lifetimeDeadline.");
+	if (!Number.isFinite(input.assessmentTimeoutMs) || input.assessmentTimeoutMs < 0) throw new Error("Worker decision authority requires a finite nonnegative assessmentTimeoutMs.");
 	if (!input.authority || typeof input.authority.decide !== "function") throw new Error("Worker decision authority requires a decide callback.");
 	const sessions = registry().sessions;
 	let session = sessions.get(input.sessionId);
 	if (session?.disposed) throw new WorkerDecisionAuthorityError("session-disposed");
 	if (session?.owner) throw new WorkerDecisionAuthorityError("owner-conflict");
 	if (!session) session = createSession(sessions, input.sessionId, false);
-	const owner: Owner = { generation: randomUUID(), lifetimeDeadline: input.lifetimeDeadline, authority: { decide: input.authority.decide.bind(input.authority), onApplied: input.authority.onApplied?.bind(input.authority) }, controller: new AbortController() };
+	const owner: Owner = { generation: randomUUID(), lifetimeDeadline: input.lifetimeDeadline, assessmentTimeoutMs: input.assessmentTimeoutMs, authority: { decide: input.authority.decide.bind(input.authority), onApplied: input.authority.onApplied?.bind(input.authority) }, controller: new AbortController() };
 	session.owner = owner;
 	return Object.freeze({ generation: owner.generation, dispose() { if (session.owner === owner) { session.owner = undefined; owner.controller.abort(); } } });
+}
+
+/** Fencing metadata only. A read miss never allocates retained session state. */
+export function getWorkerDecisionAuthoritySnapshot(sessionId: string): WorkerDecisionAuthoritySnapshot {
+	assertId(sessionId);
+	const session = registry().sessions.get(sessionId);
+	if (!session) return Object.freeze({ kind: "never-owned" });
+	if (session.disposed) return Object.freeze({ kind: "disposed" });
+	const owner = session.owner;
+	if (!owner) return Object.freeze({ kind: "missing" });
+	return Object.freeze({ kind: "active", generation: owner.generation, lifetimeDeadline: owner.lifetimeDeadline, assessmentTimeoutMs: owner.assessmentTimeoutMs });
+}
+
+/** Nonterminal invalidation: abort only the captured generation, retaining all consumed identities. */
+export function invalidateWorkerDecisionAuthority(sessionId: string, generation: string): boolean {
+	assertId(sessionId);
+	assertId(generation);
+	const session = registry().sessions.get(sessionId);
+	const owner = session?.owner;
+	if (!session || session.disposed || !owner || owner.generation !== generation) return false;
+	session.owner = undefined;
+	owner.controller.abort();
+	return true;
 }
 
 /** Mark session terminal; retain tombstones so disposal cannot reset assessment consumption. */
@@ -323,7 +355,7 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 			input.signal?.addEventListener("abort", onCancel, { once: true });
 			cancelTimer = clock.schedule(hardDeadline, () => stop("deadline-exceeded"));
 		});
-		const assessmentCutoff = Math.min(admittedAt + input.classifierTimeoutMs, hardDeadline - RESOLUTION_RESERVE_MS);
+		const assessmentCutoff = Math.min(admittedAt + Math.min(owner.assessmentTimeoutMs, input.classifierTimeoutMs), hardDeadline - RESOLUTION_RESERVE_MS);
 		const context: WorkerDecisionContext = Object.freeze({
 			signal: controller.signal, assessmentCutoff, hardDeadline, assessmentAvailable: clock.now() < assessmentCutoff,
 			async resolveTarget(model: string): Promise<WorkerDecisionTarget> {

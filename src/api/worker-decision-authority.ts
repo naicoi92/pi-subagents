@@ -1,7 +1,9 @@
 export {
 	WORKER_DECISION_AUTHORITY_LIMITS,
 	disposeWorkerDecisionSession,
+	getWorkerDecisionAuthoritySnapshot,
 	getWorkerDecisionState,
+	invalidateWorkerDecisionAuthority,
 	prepareWorkerDecision,
 	registerWorkerDecisionAuthority,
 	WorkerDecisionAuthorityError,
@@ -12,6 +14,7 @@ export {
 	type WorkerDecision,
 	type WorkerDecisionAuthority,
 	type WorkerDecisionAuthorityRegistration,
+	type WorkerDecisionAuthoritySnapshot,
 	type WorkerDecisionBaseline,
 	type WorkerDecisionBlockReason,
 	type WorkerDecisionClock,

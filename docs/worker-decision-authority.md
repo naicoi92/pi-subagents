@@ -4,7 +4,18 @@
 
 ## Ownership and outcomes
 
-`registerWorkerDecisionAuthority({ sessionId, lifetimeDeadline, authority })` registers one owner and returns `{ generation, dispose() }`. Duplicate registration throws `WorkerDecisionAuthorityError` with typed `owner-conflict`. Generation is immutable. Disposing aborts pending preparation; old disposal cannot remove a replacement. Replacing an owner requires disposal, never silent overwrite. Owner callbacks are snapshotted at registration.
+`registerWorkerDecisionAuthority({ sessionId, lifetimeDeadline, assessmentTimeoutMs, authority })` registers one owner and returns `{ generation, dispose() }`. The required assessment timeout is finite and nonnegative (zero and fractional milliseconds are valid); no default is synthesized. Registration snapshots both lifetime and assessment budget. Duplicate registration throws `WorkerDecisionAuthorityError` with typed `owner-conflict`. Generation is immutable. Disposing aborts pending preparation; old disposal cannot remove a replacement. Replacing an owner requires disposal, never silent overwrite. Owner callbacks are snapshotted at registration.
+
+`getWorkerDecisionAuthoritySnapshot(sessionId)` returns immutable fencing metadata only:
+
+- `never-owned`: no retained session exists.
+- `active`: registered owner metadata `{ generation, lifetimeDeadline, assessmentTimeoutMs }`, with no authority callback, task or secret. This reports registration, not proof its deadline is still live; preparation rechecks time and generation.
+- `missing`: previously registered session has no current owner.
+- `disposed`: terminal session tombstone.
+
+Use the actual originating host session identity consistently for registration and lookup. The native executor's existing identity convention prefers the public session file over session UUID; native routing is not wired yet. Capture a generation once for a logical leaf, not again after awaits to adopt a replacement. Snapshot reads of absent sessions allocate no retained session records and do not consume admission slots.
+
+`invalidateWorkerDecisionAuthority(sessionId, generation)` is nonterminal, generation-checked invalidation. It returns `true` only when it removes that matching owner and aborts its pending work; absent, missing, terminal or stale-generation cases return `false` without allocation. Same-session registration can then succeed with a new generation. Consumed identities and committed pairs remain intact; stale invalidation and old registration disposal cannot remove a replacement. It does not authorize another assessment of blocked or indeterminate work. Later lifecycle integration must capture session ID plus generation, not a stale extension context.
 
 `disposeWorkerDecisionSession(sessionId)` terminates that session identity and aborts outstanding work. Registration cannot revive it. Session IDs must identify distinct originating sessions; do not reuse them after termination.
 
@@ -44,9 +55,9 @@ These callbacks are trusted code, not a sandbox. Integration must bind their req
 
 ## Deadlines and cancellation
 
-Hard authority deadline is the minimum finite launch deadline and finite registered owner lifetime. Non-finite provided launch deadlines and invalid classifier timeouts are rejected. No automatic deadline extension exists.
+Hard authority deadline is the minimum finite launch deadline and finite registered owner lifetime. Non-finite provided launch deadlines and invalid per-request classifier timeouts are rejected. The registered `assessmentTimeoutMs` is authoritative; preparation's required finite nonnegative `classifierTimeoutMs` is only an additional tightening cap. A caller cannot extend the owner's assessment budget. Later hosts can pass the active snapshot's timeout as this cap; there is no executor-selected assessment default. No automatic deadline extension exists.
 
-Assessment cutoff is `min(admission + classifierTimeoutMs, hardDeadline - 500)`. The 500 ms reserve separates classifier time from resolution/validation/commit budget. `assessmentAvailable` is false when no assessment time remains. The owner must enforce its classifier cutoff and may explicitly retain a verified original pair while authority is still live. The core does not abort authority at assessment cutoff or choose fallback. At hard deadline, cancellation, owner replacement or session disposal, preparation settles blocked even if callback ignores its abort signal. Late replies cannot commit. Host work should cooperate with cancellation; JavaScript cannot forcibly terminate an arbitrary callback.
+Assessment cutoff is `min(admission + min(owner.assessmentTimeoutMs, input.classifierTimeoutMs), hardDeadline - 500)`. The 500 ms reserve separates classifier time from resolution/validation/commit budget. `assessmentAvailable` is false when no assessment time remains. The owner must enforce its classifier cutoff and may explicitly retain a verified original pair while authority is still live. The core does not abort authority at assessment cutoff or choose fallback. At hard deadline, cancellation, owner replacement or session disposal, preparation settles blocked even if callback ignores its abort signal. Late replies cannot commit. Host work should cooperate with cancellation; JavaScript cannot forcibly terminate an arbitrary callback.
 
 An injectable `WorkerDecisionClock` (`now`, absolute-deadline `schedule`) permits deterministic fixtures. Production defaults use host time and timers. Resolution and validation consume remaining budget; neither resets it. No new positive minimum validation-time threshold is invented: completion must occur strictly before the hard deadline.
 
@@ -71,12 +82,12 @@ The public immutable `WORKER_DECISION_AUTHORITY_LIMITS` defines these engineerin
 | Consumed entries across all retained sessions | 4096 |
 | Each session ID, logical launch ID, runtime attempt ID and supplied owner generation | 256 UTF-8 bytes |
 
-IDs must be non-empty trimmed strings without NUL. Every public admission validates IDs before registry/ledger lookup or binding hashing. Registration, terminal disposal and state inspection throw typed `WorkerDecisionAuthorityError("invalid-request")` for malformed IDs; preparation returns typed blocked invalid-request. Limits apply to `disposeWorkerDecisionSession` even for a previously unknown session: creating a terminal tombstone consumes one retained-session slot.
+IDs must be non-empty trimmed strings without NUL. Every public admission validates IDs before registry/ledger lookup or binding hashing. Registration, snapshot/state inspection, nonterminal invalidation and terminal disposal throw typed `WorkerDecisionAuthorityError("invalid-request")` for malformed IDs; preparation returns typed blocked invalid-request. Limits apply to `disposeWorkerDecisionSession` even for a previously unknown session: creating a terminal tombstone consumes one retained-session slot.
 
-New session/tombstone admission at capacity throws typed `capacity-exceeded` before allocating retained state. New logical assessment at either entry cap returns blocked capacity-exceeded before claim or callback. Existing duplicates can still join or revalidate/reuse their original commitment at capacity, subject to all authority/deadline/revision guards. Existing session disposal remains available. Neither owner disposal nor terminal disposal frees an admission slot or clears consumed identities.
+New session/tombstone admission at capacity throws typed `capacity-exceeded` before allocating retained state. New logical assessment at either entry cap returns blocked capacity-exceeded before claim or callback. Existing duplicates can still join or revalidate/reuse their original commitment at capacity, subject to all authority/deadline/revision guards. Existing session disposal remains available. Neither owner disposal, nonterminal invalidation nor terminal disposal frees an admission slot or clears consumed identities. Snapshot and invalidation misses never allocate retained sessions, even at capacity.
 
 There is no LRU eviction, reset API or automatic retry that forgets consumed work. Saturation deliberately refuses new owned work for the remainder of this process lifetime; it does not justify restarting to retry an indeterminate logical launch. These bounds limit retained record counts and identity bytes, not arbitrary trusted host model/revision string sizes or callback-owned allocations.
 
 A follow-on durable integration must persist claim before inference and block indeterminate crash recovery, rather than reconstruct a missing claim as unconsumed. It must separately prove child identity/termination around ambiguous spawn.
 
-See [API-core acceptance matrix](testing/worker-decision-authority-core.md) for contract tests and deferred proof boundaries.
+See [API-core acceptance matrix](testing/worker-decision-authority-core.md) and [routing-delta acceptance matrix](testing/worker-decision-authority-routing.md) for contract tests and deferred proof boundaries. This routing delta adds no foreground/background launch hook, deadline anchoring, lifecycle event wiring or detached transport.

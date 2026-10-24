@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
 	disposeWorkerDecisionSession, getWorkerDecisionState, prepareWorkerDecision,
+	getWorkerDecisionAuthoritySnapshot, invalidateWorkerDecisionAuthority,
 	registerWorkerDecisionAuthority, WorkerDecisionAuthorityError, WORKER_DECISION_AUTHORITY_LIMITS,
 	type PrepareWorkerDecisionInput, type WorkerDecision,
 } from "../../src/api/worker-decision-authority.ts";
@@ -12,7 +13,7 @@ let assessments = 0;
 let validations = 0;
 let notifications = 0;
 const authority = { async decide() { assessments++; return selected; }, onApplied() { notifications++; } };
-function register(sessionId: string) { return registerWorkerDecisionAuthority({ sessionId, lifetimeDeadline: 5000, authority }); }
+function register(sessionId: string) { return registerWorkerDecisionAuthority({ sessionId, lifetimeDeadline: 5000, assessmentTimeoutMs: 1000, authority }); }
 function input(sessionId: string, generation: string, logicalLaunchId: string): PrepareWorkerDecisionInput {
 	return {
 		sessionId,
@@ -65,7 +66,7 @@ switch (process.argv[2]) {
 		const pendingReply = new Promise<WorkerDecision>((resolve) => { release = resolve; });
 		// Same registered callback object is snapshotted; replace owner, not its callback, to pause final slot.
 		owner.dispose();
-		const replacement = registerWorkerDecisionAuthority({ sessionId: "entries", lifetimeDeadline: 5000, authority: { async decide() { assessments++; entered(); return pendingReply; }, onApplied() { notifications++; } } });
+		const replacement = registerWorkerDecisionAuthority({ sessionId: "entries", lifetimeDeadline: 5000, assessmentTimeoutMs: 1000, authority: { async decide() { assessments++; entered(); return pendingReply; }, onApplied() { notifications++; } } });
 		const finalInput = input("entries", replacement.generation, "leaf-255");
 		const pending = prepareWorkerDecision(finalInput);
 		await started;
@@ -122,6 +123,47 @@ switch (process.argv[2]) {
 		assert.equal(assessments, 1);
 		disposeWorkerDecisionSession(exact);
 		assert.throws(() => register(exact), hasReason("session-disposed"));
+		break;
+	}
+	case "routing-capacity": {
+		for (let n = 0; n < 1024; n++) {
+			assert.deepEqual(getWorkerDecisionAuthoritySnapshot(`absent-${n}`), { kind: "never-owned" });
+			assert.equal(invalidateWorkerDecisionAuthority(`absent-${n}`, "expected-generation"), false);
+		}
+		for (let n = 0; n < 256; n++) {
+			const sessionId = `routing-${n}`;
+			const owner = register(sessionId);
+			assert.equal(invalidateWorkerDecisionAuthority(sessionId, owner.generation), true);
+		}
+		assert.throws(() => register("routing-over"), hasReason("capacity-exceeded"));
+		assert.deepEqual(getWorkerDecisionAuthoritySnapshot("absent-over"), { kind: "never-owned" });
+		assert.equal(invalidateWorkerDecisionAuthority("absent-over", "expected-generation"), false);
+		assert.deepEqual(getWorkerDecisionAuthoritySnapshot("routing-255"), { kind: "missing" });
+		const replacement = register("routing-255");
+		assert.equal(getWorkerDecisionAuthoritySnapshot("routing-255").kind, "active");
+		disposeWorkerDecisionSession("routing-255");
+		assert.equal(invalidateWorkerDecisionAuthority("routing-255", replacement.generation), false);
+		assert.deepEqual(getWorkerDecisionAuthoritySnapshot("routing-255"), { kind: "disposed" });
+		assert.throws(() => register("routing-255"), hasReason("session-disposed"));
+		break;
+	}
+	case "routing-ids": {
+		const exact = "é".repeat(128);
+		const invalidIds = [`${exact}x`, "", " padded", "bad\0id", 7, null];
+		for (const invalid of invalidIds) {
+			const bad = invalid as string;
+			assert.throws(() => getWorkerDecisionAuthoritySnapshot(bad), hasReason("invalid-request"));
+			assert.throws(() => invalidateWorkerDecisionAuthority(bad, "generation"), hasReason("invalid-request"));
+			assert.throws(() => invalidateWorkerDecisionAuthority("absent", bad), hasReason("invalid-request"));
+		}
+		assert.deepEqual(getWorkerDecisionAuthoritySnapshot(exact), { kind: "never-owned" });
+		assert.equal(invalidateWorkerDecisionAuthority(exact, exact), false);
+		const owner = register(exact);
+		for (const invalid of invalidIds) assert.throws(() => invalidateWorkerDecisionAuthority(exact, invalid as string), hasReason("invalid-request"));
+		assert.equal(getWorkerDecisionAuthoritySnapshot(exact).kind, "active");
+		assert.equal(invalidateWorkerDecisionAuthority(exact, exact), false);
+		assert.equal(invalidateWorkerDecisionAuthority(exact, owner.generation), true);
+		assert.deepEqual(getWorkerDecisionAuthoritySnapshot(exact), { kind: "missing" });
 		break;
 	}
 	default: throw new Error("Unknown capacity fixture mode");

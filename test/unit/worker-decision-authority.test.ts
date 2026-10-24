@@ -46,7 +46,7 @@ function fixture(authority?: WorkerDecisionAuthority) {
 	const sessionId = `worker-authority-test-${++sequence}`;
 	const applied: AppliedWorkerDecision[] = [];
 	const registration = registerWorkerDecisionAuthority({
-		sessionId, lifetimeDeadline: 10000,
+		sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000,
 		authority: authority ?? { async decide() { return decision; }, onApplied(receipt) { applied.push(receipt); } },
 	});
 	const input: { -readonly [Key in keyof PrepareWorkerDecisionInput]: PrepareWorkerDecisionInput[Key] } = {
@@ -68,7 +68,7 @@ function fixture(authority?: WorkerDecisionAuthority) {
 it("C01-duplicate: one originating session rejects a second owner", () => {
 	const f = fixture();
 	try {
-		assert.throws(() => registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { return decision; } } }), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "owner-conflict");
+		assert.throws(() => registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000, authority: { async decide() { return decision; } } }), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "owner-conflict");
 	} finally { f.registration.dispose(); }
 });
 
@@ -210,7 +210,7 @@ it("C04-cancel-pending-duplicate: cancelled duplicate cannot join pending author
 it("C01-dispose: old registration cannot dispose replacement owner", async () => {
 	const f = fixture();
 	f.registration.dispose();
-	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { return decision; } } });
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000, authority: { async decide() { return decision; } } });
 	f.registration.dispose();
 	try {
 		assert.notEqual(replacement.generation, f.registration.generation);
@@ -233,7 +233,7 @@ it("C01-session: terminal session disposal blocks registration and preparation",
 	const f = fixture();
 	disposeWorkerDecisionSession(f.sessionId);
 	assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "session-disposed" });
-	assert.throws(() => registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { return decision; } } }), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "session-disposed");
+	assert.throws(() => registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000, authority: { async decide() { return decision; } } }), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "session-disposed");
 	f.registration.dispose();
 });
 
@@ -288,7 +288,7 @@ it("C04-stale: old generation cannot assess under replacement", async () => {
 	const f = fixture();
 	f.registration.dispose();
 	let calls = 0;
-	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { calls++; return decision; } } });
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000, authority: { async decide() { calls++; return decision; } } });
 	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "stale-owner" }); assert.equal(calls, 0); }
 	finally { replacement.dispose(); }
 });
@@ -393,7 +393,7 @@ it("C05-generation: owner succession preserves consumed indeterminate identity",
 	await prepareWorkerDecision(f.input);
 	f.registration.dispose();
 	let calls = 0;
-	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { calls++; return decision; } } });
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000, authority: { async decide() { calls++; return decision; } } });
 	try {
 		assert.deepEqual(await prepareWorkerDecision({ ...f.input, control: { ...f.input.control, ownerGeneration: replacement.generation } }), { kind: "blocked", reason: "consumed-indeterminate" });
 		assert.equal(calls, 0);
@@ -465,7 +465,7 @@ it("C04-owner-lifetime: hard deadline uses earlier finite owner lifetime", async
 	const entered = deferred<void>();
 	const f = fixture();
 	f.registration.dispose();
-	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 2200, authority: { async decide(_, context) {
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 2200, assessmentTimeoutMs: 1000, authority: { async decide(_, context) {
 		assert.equal(context.hardDeadline, 2200);
 		assert.equal(context.assessmentCutoff, 1700);
 		entered.resolve();
