@@ -5,6 +5,7 @@ import { createServer } from "node:http";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertAsyncReceipt, assertForegroundReceipt } from "./native-worker-authority-cli-assertions.mjs";
 
 // Explicit opt-in, one host/scenario per invocation; never discovered by the normal test suite.
 const [directory, scenario, cli, sdkVersion, bindingKind] = process.argv.slice(2);
@@ -99,11 +100,11 @@ try {
 			if (terminal?.state === "observed") break;
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		}
-		assert.equal(terminal?.state, "observed", "Native process terminal not observed: retain dependencies");
+		assertAsyncReceipt(completed);
 	}
 	// CLI-01 and CLI-02 are separate scenario assertions; expected values are matrix literals.
 	assert.deepEqual(requests.filter((r) => r.model !== "parent").map(({ model, reasoning_effort }) => ({ model, reasoning_effort })), [{ model: "selected", reasoning_effort: "medium" }]);
-	assert.match(JSON.stringify(completed), /CHILD_RECEIPT_OK/, "Completed native receipt lacks provider response");
+	if (scenario === "foreground") assertForegroundReceipt(completed);
 	const decisions = records().filter((r) => r.type === "decide");
 	const applied = records().filter((r) => r.type === "applied");
 	assert.equal(decisions.length, 1); assert.equal(applied.length, 1);
