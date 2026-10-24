@@ -1,4 +1,5 @@
 export {
+	WORKER_DECISION_AUTHORITY_LIMITS,
 	disposeWorkerDecisionSession,
 	getWorkerDecisionState,
 	prepareWorkerDecision,

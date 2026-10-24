@@ -11,7 +11,7 @@
 `prepareWorkerDecision(input)` returns one of:
 
 - `unowned`: this session has never registered an owner and the request did not name an expected generation. Later integration must preserve existing launch behavior on this optional path, not attribute a Jev selection.
-- `blocked` with a safe typed `reason`: missing expected owner, stale generation, disposed session, cancellation/deadline, invalid reply, denied admission or consumed-indeterminate assessment. A previously owned session does not silently become unowned after disposal.
+- `blocked` with a safe typed `reason`: missing expected owner, stale generation, disposed session, cancellation/deadline, invalid reply, denied admission, capacity-exceeded admission or consumed-indeterminate assessment. A previously owned session does not silently become unowned after disposal.
 - `committed` with immutable `receipt`: exact pair passed trusted validation and was logically committed. This is not a spawn, lease, provider execution or terminal receipt.
 
 `getWorkerDecisionState(sessionId, logicalLaunchId)` reports `unconsumed`, consumed `pending`/`blocked`/`indeterminate`, or the committed receipt. No task content or raw exception is returned.
@@ -38,6 +38,8 @@ The owner can instead explicitly reject with a typed reason. Classification and 
 - `resolveTarget(model, request, { signal, hardDeadline })`: side-effect-free authoritative final-target support/baseline/admission evidence. The callback context exposes this as `resolveTarget(model)`, fenced by the same owner, cancellation, revisions and deadline. A resolved target must match requested physical ID and revisions. An unavailable effective baseline stays unresolved; do not create a session to discover it.
 - `validate(pair, request, { signal, hardDeadline })`: validate exact physical ID, supported effort, availability, fixed/selectable contract, scope, ceilings, required extensions and budgets against the same resolved host definition. Return `valid` or typed refusal; do not silently substitute/clamp around policy. The core never imports private host APIs or assumes model support.
 
+Primitive owner/session/cancellation/time guards run after revision callbacks, after target serialization, and after receipt construction/hash immediately before ledger commitment. No host callback runs between that final guard and commitment. Revalidation/reuse is fenced the same way.
+
 These callbacks are trusted code, not a sandbox. Integration must bind their request/definition/task snapshots correctly. The core does not claim to implement authoritative host baseline resolution.
 
 ## Deadlines and cancellation
@@ -50,12 +52,31 @@ An injectable `WorkerDecisionClock` (`now`, absolute-deadline `schedule`) permit
 
 ## Consumption, recovery and notification
 
-Claim occurs synchronously before `decide`, including reentrant callbacks. One assessment is consumed per stable logical launch ID, not per runtime attempt. Pending duplicate deliveries join the first result; a duplicate's cancellation/deadline only stops its own wait. Original request cancellation blocks the shared decision. Changed task/context/policy revisions produce `identity-conflict`, never a new assessment under the same logical ID. Owner succession preserves consumption.
+Claim occurs synchronously before `decide`, including reentrant callbacks. One assessment is consumed per stable logical launch ID, not per runtime attempt. Pending duplicate deliveries join the first result; a duplicate's cancellation/deadline only stops its own wait. Original request cancellation blocks the shared decision. Changed task/context/policy revisions produce `identity-conflict`, never a new assessment under the same logical ID. Owner succession preserves consumption. Binding uses validated named-field projections for facts and nested policy records: record key insertion order and undeclared extra fields do not change identity, while actual declared values and meaningful array order do. Malformed declared fields are invalid-request, not silently coerced.
 
 Committed duplicate delivery revalidates the same pair under current authority and returns the same receipt without reassessment or another notification. This allows a later native integration to reuse selection for a separately authorized runtime attempt; **it does not authorize spawning or bypass termination/lease checks**. The committed receipt retains its original deciding generation.
 
 Callback exceptions leave `consumed-indeterminate`, not an implicit retry or executor-selected baseline. Typed rejection/deadline/cancellation remains consumed. `onApplied` runs after validation and logical commitment, at most once. If it throws, commitment stays valid and result includes `notification: "failed"`; no raw error is returned. There is no observer retry/outbox guarantee.
 
-Registry and ledger are process-local, shared across duplicate imports using the existing global-symbol pattern. They are not crash-durable. No restore/import API, task-bearing transport, disk ledger or durable exactly-once inference is claimed. Terminal session tombstones and consumed entries remain in process memory to prevent ID reuse/reset; retention is currently process-lifetime. A follow-on durable integration must persist claim before inference and block indeterminate crash recovery, rather than reconstruct a missing claim as unconsumed. It must separately prove child identity/termination around ambiguous spawn.
+Registry and ledger are process-local, shared across duplicate imports using the existing global-symbol pattern. They are not crash-durable. No restore/import API, task-bearing transport, disk ledger or durable exactly-once inference is claimed. Terminal session tombstones and consumed entries remain in process memory to prevent ID reuse/reset; retention is process-lifetime under finite admission bounds.
+
+### Bounded process-lifetime retention
+
+The public immutable `WORKER_DECISION_AUTHORITY_LIMITS` defines these engineering limits:
+
+| Resource | Limit |
+| --- | --- |
+| Retained originating sessions, including disposed registrations and terminal tombstones | 256 |
+| Consumed entries per session, including pending/blocked/indeterminate/committed entries | 256 |
+| Consumed entries across all retained sessions | 4096 |
+| Each session ID, logical launch ID, runtime attempt ID and supplied owner generation | 256 UTF-8 bytes |
+
+IDs must be non-empty trimmed strings without NUL. Every public admission validates IDs before registry/ledger lookup or binding hashing. Registration, terminal disposal and state inspection throw typed `WorkerDecisionAuthorityError("invalid-request")` for malformed IDs; preparation returns typed blocked invalid-request. Limits apply to `disposeWorkerDecisionSession` even for a previously unknown session: creating a terminal tombstone consumes one retained-session slot.
+
+New session/tombstone admission at capacity throws typed `capacity-exceeded` before allocating retained state. New logical assessment at either entry cap returns blocked capacity-exceeded before claim or callback. Existing duplicates can still join or revalidate/reuse their original commitment at capacity, subject to all authority/deadline/revision guards. Existing session disposal remains available. Neither owner disposal nor terminal disposal frees an admission slot or clears consumed identities.
+
+There is no LRU eviction, reset API or automatic retry that forgets consumed work. Saturation deliberately refuses new owned work for the remainder of this process lifetime; it does not justify restarting to retry an indeterminate logical launch. These bounds limit retained record counts and identity bytes, not arbitrary trusted host model/revision string sizes or callback-owned allocations.
+
+A follow-on durable integration must persist claim before inference and block indeterminate crash recovery, rather than reconstruct a missing claim as unconsumed. It must separately prove child identity/termination around ambiguous spawn.
 
 See [API-core acceptance matrix](testing/worker-decision-authority-core.md) for contract tests and deferred proof boundaries.

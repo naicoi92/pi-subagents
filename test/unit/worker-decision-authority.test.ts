@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import {
 	disposeWorkerDecisionSession,
@@ -518,4 +520,115 @@ it("C06-admission: classifier cutoff starts at admission, not after host validat
 	f.input.host.getCurrentRevisions = () => { f.clock.time = 1200; return { definitionRevision: "definition-1", constraintRevision: "constraints-1" }; };
 	try { assert.equal((await prepareWorkerDecision(f.input)).kind, "committed"); }
 	finally { f.registration.dispose(); }
+});
+
+for (const [id, effect, reason] of [
+	["C04-final-deadline", (f: ReturnType<typeof fixture>) => { f.clock.time = 5000; }, "deadline-exceeded"],
+	["C04-final-dispose", (f: ReturnType<typeof fixture>) => { f.registration.dispose(); }, "stale-owner"],
+] as const) {
+	it(`${id}: final revision callback cannot invalidate authority then commit`, async () => {
+		const f = fixture();
+		let revisions = 0;
+		f.input.host.getCurrentRevisions = () => {
+			if (++revisions === 4) effect(f);
+			return { definitionRevision: "definition-1", constraintRevision: "constraints-1" };
+		};
+		try {
+			assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason });
+			assert.notEqual(getWorkerDecisionState(f.sessionId, "leaf-1").kind, "committed");
+			assert.equal(f.applied.length, 0);
+		} finally { f.registration.dispose(); }
+	});
+}
+
+it("C04-reuse-final: revision callback cannot permit expired committed reuse", async () => {
+	const f = fixture();
+	try {
+		assert.equal((await prepareWorkerDecision(f.input)).kind, "committed");
+		let revisions = 0;
+		f.input.host.getCurrentRevisions = () => {
+			if (++revisions === 4) f.clock.time = 5000;
+			return { definitionRevision: "definition-1", constraintRevision: "constraints-1" };
+		};
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "deadline-exceeded" });
+		assert.equal(f.applied.length, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("C04-resolver-final: target serialization cannot outlive authority", async () => {
+	let resolved = false;
+	const f = fixture({ async decide(_, context) { await context.resolveTarget("provider/target"); resolved = true; return decision; } });
+	f.input.host.resolveTarget = async () => ({
+		kind: "resolved", model: "provider/target", supportedThinking: ["medium"], baseline: { kind: "unresolved", reason: "thinking-unresolved" },
+		definitionRevision: "definition-1", constraintRevision: "constraints-1",
+		get ignoredSerializationWork() { f.clock.time = 5000; return true; },
+	});
+	try {
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "deadline-exceeded" });
+		assert.equal(resolved, false);
+		assert.equal(getWorkerDecisionState(f.sessionId, "leaf-1").kind, "consumed");
+	} finally { f.registration.dispose(); }
+});
+
+for (const [id, mode] of [
+	["C05-limit-sessions", "sessions"], ["C05-limit-tombstones", "tombstones"],
+	["C05-limit-session-entries", "session-entries"], ["C05-limit-total-entries", "total-entries"],
+	["C05-limit-ids", "ids"],
+] as const) {
+	it(`${id}: retention admission stays bounded in isolated process`, () => {
+		const output = execFileSync(process.execPath, ["--experimental-strip-types", fileURLToPath(new URL("../support/worker-decision-authority-capacity.ts", import.meta.url)), mode], { encoding: "utf8", timeout: 30000 });
+		assert.match(output, /Capacity boundary verified:/);
+	});
+}
+
+it("C05-canonical: reordered nested policy records reuse exact commitment", async () => {
+	let assessments = 0;
+	let notifications = 0;
+	let validations = 0;
+	const f = fixture({ async decide() { assessments++; return decision; }, onApplied() { notifications++; } });
+	f.input.host.validate = async () => { validations++; return { kind: "valid" }; };
+	try {
+		const first = await prepareWorkerDecision(f.input);
+		const reordered = {
+			original: { constraintRevision: "constraints-1", definitionRevision: "definition-1", provenance: "host-effective" as const, thinking: "low" as const, model: "provider/original", kind: "verified" as const, ignored: "not policy" },
+			modelContract: { models: ["provider/target", "provider/original"], kind: "selectable" as const, ignored: true },
+			constraintRevision: "constraints-1", definitionRevision: "definition-1", ignored: "not policy",
+		};
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: reordered }), first);
+		assert.equal(assessments, 1);
+		assert.equal(notifications, 1);
+		assert.equal(validations, 2);
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { ...reordered, original: { ...reordered.original, thinking: "high" } } }), { kind: "blocked", reason: "identity-conflict" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-canonical-unresolved: fixed model and unresolved records use named fields", async () => {
+	const f = fixture();
+	const policyContext = { definitionRevision: "definition-1", constraintRevision: "constraints-1", modelContract: { kind: "fixed" as const, model: "provider/target" }, original: { kind: "unresolved" as const, reason: "thinking-unresolved" as const } };
+	try {
+		const first = await prepareWorkerDecision({ ...f.input, policyContext });
+		assert.equal(first.kind, "committed");
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { original: { reason: "thinking-unresolved", kind: "unresolved" }, modelContract: { model: "provider/target", kind: "fixed" }, constraintRevision: "constraints-1", definitionRevision: "definition-1" } }), first);
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-canonical-array: meaningful candidate array order remains bound", async () => {
+	const f = fixture();
+	try {
+		await prepareWorkerDecision(f.input);
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { ...f.input.policyContext, modelContract: { kind: "selectable", models: ["provider/original", "provider/target"] } } }), { kind: "blocked", reason: "identity-conflict" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-canonical-invalid: malformed declared policy fields fail before assessment", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { calls++; return decision; } });
+	try {
+		for (const policyContext of [
+			{ ...f.input.policyContext, definitionRevision: null },
+			{ ...f.input.policyContext, modelContract: { kind: "unknown", models: [] } },
+			{ ...f.input.policyContext, original: { kind: "verified", model: "provider/original", thinking: null } },
+		]) assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext } as PrepareWorkerDecisionInput), { kind: "blocked", reason: "invalid-request" });
+		assert.equal(calls, 0);
+	} finally { f.registration.dispose(); }
 });

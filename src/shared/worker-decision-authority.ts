@@ -7,7 +7,7 @@ export type WorkerDecisionBlockReason =
 	| "cancelled" | "deadline-exceeded" | "invalid-deadline" | "invalid-request"
 	| "invalid-decision" | "assessment-unavailable" | "baseline-unresolved"
 	| "scope-denied" | "ceiling-denied" | "target-unavailable" | "unsupported-thinking"
-	| "stale-revisions" | "identity-conflict" | "consumed-indeterminate";
+	| "stale-revisions" | "identity-conflict" | "consumed-indeterminate" | "capacity-exceeded";
 
 export class WorkerDecisionAuthorityError extends Error {
 	readonly reason: WorkerDecisionBlockReason;
@@ -117,6 +117,13 @@ interface Entry {
 }
 interface Session { owner?: Owner; disposed: boolean; ledger: Map<string, Entry> }
 interface Registry { version: 1; sessions: Map<string, Session> }
+/** Process-lifetime admission bounds. Consumed identities are never evicted to reopen assessment. */
+export const WORKER_DECISION_AUTHORITY_LIMITS = Object.freeze({
+	retainedSessions: 256,
+	entriesPerSession: 256,
+	totalEntries: 4096,
+	idBytes: 256,
+});
 const RESOLUTION_RESERVE_MS = 500;
 const REASONS: readonly WorkerDecisionReason[] = ["assessed", "verified-original-retained", "verified-target-retained"];
 const OWNER_REJECTIONS = ["assessment-unavailable", "baseline-unresolved", "scope-denied", "ceiling-denied", "target-unavailable"] as const;
@@ -140,21 +147,68 @@ function registry(): Registry {
 	return value as Registry;
 }
 function fail(reason: WorkerDecisionBlockReason): never { throw new WorkerDecisionAuthorityError(reason); }
+function assertId(value: unknown): asserts value is string {
+	if (typeof value !== "string" || !value || value.trim() !== value || value.includes("\0") || Buffer.byteLength(value, "utf8") > WORKER_DECISION_AUTHORITY_LIMITS.idBytes) fail("invalid-request");
+}
+function createSession(sessions: Map<string, Session>, sessionId: string, disposed: boolean): Session {
+	if (sessions.size >= WORKER_DECISION_AUTHORITY_LIMITS.retainedSessions) fail("capacity-exceeded");
+	const session: Session = { disposed, ledger: new Map() };
+	sessions.set(sessionId, session);
+	return session;
+}
+function hasEntryCapacity(sessions: Map<string, Session>, session: Session): boolean {
+	if (session.ledger.size >= WORKER_DECISION_AUTHORITY_LIMITS.entriesPerSession) return false;
+	let total = 0;
+	for (const retained of sessions.values()) total += retained.ledger.size;
+	return total < WORKER_DECISION_AUTHORITY_LIMITS.totalEntries;
+}
 function isThinking(value: unknown): value is ThinkingLevel { return THINKING_LEVELS.some((level) => value === level); }
 function isPhysicalModel(value: unknown): value is string {
 	return typeof value === "string" && /^[^\s/\0]+\/[^\s\0]+$/.test(value) && !THINKING_LEVELS.some((level) => value.endsWith(`:${level}`));
 }
 function digest(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+function text(value: unknown): string {
+	if (typeof value !== "string") fail("invalid-request");
+	return value;
+}
+function revision(value: unknown): string {
+	const result = text(value);
+	if (!result || result.includes("\0")) fail("invalid-request");
+	return result;
+}
+function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecisionPolicyContext {
+	const definitionRevision = revision(policy.definitionRevision);
+	const constraintRevision = revision(policy.constraintRevision);
+	const contract = policy.modelContract;
+	let modelContract: WorkerDecisionPolicyContext["modelContract"];
+	if (contract.kind === "fixed") {
+		if (!isPhysicalModel(contract.model)) fail("invalid-request");
+		modelContract = { kind: "fixed", model: contract.model };
+	} else if (contract.kind === "selectable" && Array.isArray(contract.models) && contract.models.every(isPhysicalModel)) {
+		modelContract = { kind: "selectable", models: contract.models.map((model) => model) };
+	} else fail("invalid-request");
+	const baseline = policy.original;
+	let original: WorkerDecisionBaseline;
+	if (baseline.kind === "verified") {
+		if (!isPhysicalModel(baseline.model) || !isThinking(baseline.thinking) || !["host-effective", "explicit-launch"].includes(baseline.provenance)) fail("invalid-request");
+		original = { kind: "verified", model: baseline.model, thinking: baseline.thinking, provenance: baseline.provenance, definitionRevision: revision(baseline.definitionRevision), constraintRevision: revision(baseline.constraintRevision) };
+	} else if (baseline.kind === "unresolved" && ["model-unresolved", "thinking-unresolved", "provenance-unresolved"].includes(baseline.reason)) {
+		original = { kind: "unresolved", reason: baseline.reason };
+	} else fail("invalid-request");
+	return { definitionRevision, constraintRevision, modelContract, original };
+}
 function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionRequest {
 	const { control, facts, policyContext } = input;
-	if (!control.logicalLaunchId || !control.runtimeAttemptId || !["fresh", "fork"].includes(control.context) || typeof facts.task !== "string") fail("invalid-request");
-	// Deliberate allowlist: never spread an agent/config object into assessment facts.
+	if (!["fresh", "fork"].includes(control.context)) fail("invalid-request");
+	// Named-field projection fixes record order and excludes undeclared config/policy extras.
 	const projected: WorkerDecisionFacts = {
-		task: facts.task,
-		...(facts.role ? { role: { description: facts.role.description, provenance: facts.role.provenance } } : {}),
-		...(facts.capabilities ? { capabilities: facts.capabilities.map(({ description, provenance }) => ({ description, provenance })) } : {}),
+		task: text(facts.task),
+		...(facts.role !== undefined ? { role: { description: text(facts.role.description), provenance: facts.role.provenance } } : {}),
+		...(facts.capabilities !== undefined ? { capabilities: facts.capabilities.map(({ description, provenance }) => ({ description: text(description), provenance })) } : {}),
 	};
-	return freeze({ control: { logicalLaunchId: control.logicalLaunchId, runtimeAttemptId: control.runtimeAttemptId, ownerGeneration: control.ownerGeneration, context: control.context, launchDeadline: control.launchDeadline }, facts: projected, policyContext: structuredClone(policyContext) });
+	if (projected.role && !["resolved-agent", "authored-task"].includes(projected.role.provenance)) fail("invalid-request");
+	if (projected.capabilities?.some((capability) => !["host", "resolved-agent"].includes(capability.provenance))) fail("invalid-request");
+	return freeze({ control: { logicalLaunchId: control.logicalLaunchId, runtimeAttemptId: control.runtimeAttemptId, ownerGeneration: control.ownerGeneration, context: control.context, launchDeadline: control.launchDeadline }, facts: projected, policyContext: snapshotPolicyContext(policyContext) });
 }
 function freeze<T>(value: T): T {
 	if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
@@ -163,14 +217,14 @@ function freeze<T>(value: T): T {
 
 /** Register one originating-session owner. Disposing aborts callbacks but retains consumed logical identities. */
 export function registerWorkerDecisionAuthority(input: RegisterWorkerDecisionAuthorityInput): WorkerDecisionAuthorityRegistration {
-	if (typeof input.sessionId !== "string" || !input.sessionId || input.sessionId.trim() !== input.sessionId || input.sessionId.length > 256 || input.sessionId.includes("\0")) throw new Error("Worker decision authority requires a trimmed sessionId of at most 256 characters without NUL.");
+	assertId(input.sessionId);
 	if (!Number.isFinite(input.lifetimeDeadline)) throw new Error("Worker decision authority requires a finite lifetimeDeadline.");
 	if (!input.authority || typeof input.authority.decide !== "function") throw new Error("Worker decision authority requires a decide callback.");
 	const sessions = registry().sessions;
 	let session = sessions.get(input.sessionId);
 	if (session?.disposed) throw new WorkerDecisionAuthorityError("session-disposed");
 	if (session?.owner) throw new WorkerDecisionAuthorityError("owner-conflict");
-	if (!session) { session = { disposed: false, ledger: new Map() }; sessions.set(input.sessionId, session); }
+	if (!session) session = createSession(sessions, input.sessionId, false);
 	const owner: Owner = { generation: randomUUID(), lifetimeDeadline: input.lifetimeDeadline, authority: { decide: input.authority.decide.bind(input.authority), onApplied: input.authority.onApplied?.bind(input.authority) }, controller: new AbortController() };
 	session.owner = owner;
 	return Object.freeze({ generation: owner.generation, dispose() { if (session.owner === owner) { session.owner = undefined; owner.controller.abort(); } } });
@@ -178,9 +232,10 @@ export function registerWorkerDecisionAuthority(input: RegisterWorkerDecisionAut
 
 /** Mark session terminal; retain tombstones so disposal cannot reset assessment consumption. */
 export function disposeWorkerDecisionSession(sessionId: string): void {
+	assertId(sessionId);
 	const sessions = registry().sessions;
 	let session = sessions.get(sessionId);
-	if (!session) { session = { disposed: true, ledger: new Map() }; sessions.set(sessionId, session); }
+	if (!session) session = createSession(sessions, sessionId, true);
 	session.disposed = true;
 	session.owner?.controller.abort();
 	session.owner = undefined;
@@ -188,6 +243,8 @@ export function disposeWorkerDecisionSession(sessionId: string): void {
 
 /** In-memory evidence only: restoring a consumed claim without a decision must block, never reclassify. */
 export function getWorkerDecisionState(sessionId: string, logicalLaunchId: string): WorkerDecisionState {
+	assertId(sessionId);
+	assertId(logicalLaunchId);
 	const entry = registry().sessions.get(sessionId)?.ledger.get(logicalLaunchId);
 	if (!entry) return { kind: "unconsumed" };
 	return entry.receipt ? { kind: "committed", receipt: entry.receipt } : { kind: "consumed", state: entry.state as "pending" | "indeterminate" | "blocked" };
@@ -195,6 +252,12 @@ export function getWorkerDecisionState(sessionId: string, logicalLaunchId: strin
 
 /** Claim before callback; duplicates join/reuse. No classifier, fallback selection or native launch occurs here. */
 export async function prepareWorkerDecision(input: PrepareWorkerDecisionInput): Promise<PreparedWorkerDecision> {
+	try {
+		assertId(input.sessionId);
+		assertId(input.control.logicalLaunchId);
+		assertId(input.control.runtimeAttemptId);
+		if (input.control.ownerGeneration !== undefined) assertId(input.control.ownerGeneration);
+	} catch { return { kind: "blocked", reason: "invalid-request" }; }
 	const session = registry().sessions.get(input.sessionId);
 	if (!session) return input.control.ownerGeneration ? { kind: "blocked", reason: "owner-missing" } : { kind: "unowned" };
 	if (session.disposed) return { kind: "blocked", reason: "session-disposed" };
@@ -206,10 +269,12 @@ export async function prepareWorkerDecision(input: PrepareWorkerDecisionInput): 
 	const deadlines = [owner.lifetimeDeadline, input.control.launchDeadline].filter((value): value is number => value !== undefined && Number.isFinite(value));
 	const hardDeadline = Math.min(...deadlines);
 	if (!Number.isFinite(hardDeadline) || (input.control.launchDeadline !== undefined && !Number.isFinite(input.control.launchDeadline)) || !Number.isFinite(input.classifierTimeoutMs) || input.classifierTimeoutMs < 0) return { kind: "blocked", reason: "invalid-deadline" };
+	let existing = session.ledger.get(input.control.logicalLaunchId);
+	if (!existing && !hasEntryCapacity(registry().sessions, session)) return { kind: "blocked", reason: "capacity-exceeded" };
 	let request: WorkerDecisionRequest;
 	try { request = snapshotRequest(input); } catch { return { kind: "blocked", reason: "invalid-request" }; }
 	const binding = digest({ facts: request.facts, policyContext: request.policyContext, context: request.control.context });
-	const existing = session.ledger.get(request.control.logicalLaunchId);
+	existing = session.ledger.get(request.control.logicalLaunchId);
 	if (existing && existing.binding !== binding) return { kind: "blocked", reason: "identity-conflict" };
 	if (existing?.state === "indeterminate") return { kind: "blocked", reason: "consumed-indeterminate" };
 	if (input.signal?.aborted) return { kind: "blocked", reason: "cancelled" };
@@ -217,7 +282,10 @@ export async function prepareWorkerDecision(input: PrepareWorkerDecisionInput): 
 	if (existing && !existing.receipt) return joinPending(existing.promise, input.signal, clock, hardDeadline);
 	const entry: Entry = existing ?? { binding, state: "pending", promise: Promise.resolve({ kind: "blocked", reason: "consumed-indeterminate" }) };
 	// This synchronous claim survives owner/revision changes; only the first claimant invokes decide.
-	if (!existing) session.ledger.set(request.control.logicalLaunchId, entry);
+	if (!existing) {
+		if (!hasEntryCapacity(registry().sessions, session)) return { kind: "blocked", reason: "capacity-exceeded" };
+		session.ledger.set(request.control.logicalLaunchId, entry);
+	}
 	const promise = runPreparation(input, request, session, owner, entry, clock, admittedAt, hardDeadline, existing?.receipt);
 	if (!existing) entry.promise = promise;
 	return promise;
@@ -225,13 +293,17 @@ export async function prepareWorkerDecision(input: PrepareWorkerDecisionInput): 
 
 async function runPreparation(input: PrepareWorkerDecisionInput, request: WorkerDecisionRequest, session: Session, owner: Owner, entry: Entry, clock: WorkerDecisionClock, admittedAt: number, hardDeadline: number, retained?: AppliedWorkerDecision): Promise<PreparedWorkerDecision> {
 	const controller = new AbortController();
-	const check = () => {
+	const guard = () => {
 		if (session.disposed) fail("session-disposed");
 		if (session.owner !== owner || owner.controller.signal.aborted) fail("stale-owner");
 		if (input.signal?.aborted || controller.signal.aborted) fail("cancelled");
 		if (clock.now() >= hardDeadline) fail("deadline-exceeded");
+	};
+	const check = () => {
+		guard();
 		const revisions = input.host.getCurrentRevisions();
 		if (revisions.definitionRevision !== request.policyContext.definitionRevision || revisions.constraintRevision !== request.policyContext.constraintRevision) fail("stale-revisions");
+		guard();
 	};
 	let cancelTimer = () => {};
 	let onOwnerAbort = () => {};
@@ -260,7 +332,9 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 				const target = await Promise.race([input.host.resolveTarget(model, request, { signal: controller.signal, hardDeadline }), interrupted]);
 				check();
 				if (target.kind === "resolved" && (target.model !== model || target.definitionRevision !== request.policyContext.definitionRevision || target.constraintRevision !== request.policyContext.constraintRevision)) fail("stale-revisions");
-				return freeze(structuredClone(target));
+				const snapshot = freeze(structuredClone(target));
+				guard();
+				return snapshot;
 			},
 		});
 		const work = async (): Promise<PreparedWorkerDecision> => {
@@ -278,12 +352,15 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 			if (!retained && (!("kind" in reply) || reply.kind !== "apply")) fail("invalid-decision");
 			if (!("model" in reply) || !("thinking" in reply) || !isPhysicalModel(reply.model) || !isThinking(reply.thinking) || !REASONS.some((reason) => reason === reply.reason) || ("requestedThinking" in reply && reply.requestedThinking !== undefined && !isThinking(reply.requestedThinking))) fail("invalid-decision");
 			const selected = Object.freeze({ model: reply.model, thinking: reply.thinking });
+			guard();
 			const validated = await input.host.validate(selected, request, { signal: controller.signal, hardDeadline });
 			check();
 			if (validated.kind !== "valid") fail(validated.reason);
-			if (retained) return { kind: "committed", receipt: retained };
+			if (retained) { guard(); return { kind: "committed", receipt: retained }; }
 			const content = { ...selected, logicalLaunchId: request.control.logicalLaunchId, ownerGeneration: owner.generation, definitionRevision: request.policyContext.definitionRevision, constraintRevision: request.policyContext.constraintRevision, reason: reply.reason as WorkerDecisionReason, ...("requestedThinking" in reply && reply.requestedThinking ? { requestedThinking: reply.requestedThinking as ThinkingLevel } : {}) };
 			const receipt: AppliedWorkerDecision = Object.freeze({ ...content, digest: digest(content) });
+			// No host callback, serialization or hashing between final authority fence and ledger mutation.
+			guard();
 			entry.receipt = receipt;
 			entry.state = "committed";
 			try { owner.authority.onApplied?.(receipt); } catch { return { kind: "committed", receipt, notification: "failed" }; }

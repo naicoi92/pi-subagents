@@ -21,3 +21,15 @@ Tests use Node's test runner with deterministic fake clock/timer callbacks, no s
 ## Deferred evidence
 
 All seven CORE criteria are testable at this seam. Native exact-envelope/fork/runtime/workflow/nested coverage, cross-process cancellation/transport, crash-durable consumed ledger and termination/lease proof remain follow-on integration work. An in-memory logical commitment is not provider execution proof or durable exactly-once inference. A new runtime attempt may reuse commitment only after integration proves existing termination/lease conditions; this API never spawns or authorizes that recovery itself.
+
+## Review correction matrix (before regression tests)
+
+Source: exact-head BLOCK review of `8ac9492d8fa0744d96b3b1e875cb7d0bb327aa3f` and approved same-seam correction task. These refine CORE-04/05, not native acceptance. Limits are engineering admission bounds, not routing policy.
+
+| Criterion | Test IDs | Observable acceptance | Independent expected source |
+| --- | --- | --- | --- |
+| CORE-04 | C04-final-deadline, C04-final-dispose, C04-reuse-final, C04-resolver-final | Revision getter #4 advancing to hard deadline or disposing owner blocks before ledger commitment with zero applied receipt; resolver/reuse also fenced after synchronous callbacks/serialization/hash; observer disposal after commit still cannot roll back | Parent public probes reproduced `committed` after deadline/disposal; correct result blocked, state not committed; hard deadline literal 5000 |
+| CORE-05 | C05-canonical, C05-canonical-unresolved, C05-canonical-array, C05-canonical-invalid | Named-field nested policy projection ignores record insertion order/unknown extra keys, validates declared fields; equivalent duplicate revalidates same receipt without assessment/notification; meaningful array order and actual value changes still conflict | Parent reordered-record probe and explicit typed field contract |
+| CORE-05 | C05-limit-sessions, C05-limit-tombstones, C05-limit-session-entries, C05-limit-total-entries, C05-limit-ids | Fail-closed capacity before allocation/callback; retain consumed identities without eviction/reset; existing duplicate join/revalidation allowed at saturation; all ID admissions reject malformed/oversized values before lookup/hash, including unknown-session disposal | Finite engineering caps: 256 retained sessions, 256 entries/session, 4096 total entries, 256 UTF-8 bytes per session/logical/attempt/generation ID; exact limit accepted, next rejected; capacity-exceeded typed reason |
+
+Capacity tests execute isolated fixture processes with public API only; no production ledger-reset API. Terminal tombstones count toward session cap, consumed entries count for process lifetime. No LRU or clearing state to admit new assessments.
