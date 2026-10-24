@@ -27,7 +27,12 @@ export type WorkerDecisionBaseline =
 /** Only this explicit factual projection is suitable for assessment; policyContext is private to the owner. */
 export interface WorkerDecisionFacts {
 	readonly task: string;
-	readonly role?: { readonly description: string; readonly provenance: "resolved-agent" | "authored-task" };
+	readonly role?: {
+		/** Exact resolved definition name; only valid with resolved-agent provenance. */
+		readonly name?: string;
+		readonly description: string;
+		readonly provenance: "resolved-agent" | "authored-task";
+	};
 	readonly capabilities?: readonly { readonly description: string; readonly provenance: "host" | "resolved-agent" }[];
 }
 export interface WorkerDecisionPolicyContext extends WorkerDecisionRevisions {
@@ -211,10 +216,11 @@ function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionReque
 	// Named-field projection fixes record order and excludes undeclared config/policy extras.
 	const projected: WorkerDecisionFacts = {
 		task: text(facts.task),
-		...(facts.role !== undefined ? { role: { description: text(facts.role.description), provenance: facts.role.provenance } } : {}),
+		...(facts.role !== undefined ? { role: { ...(facts.role.name !== undefined ? { name: text(facts.role.name) } : {}), description: text(facts.role.description), provenance: facts.role.provenance } } : {}),
 		...(facts.capabilities !== undefined ? { capabilities: facts.capabilities.map(({ description, provenance }) => ({ description: text(description), provenance })) } : {}),
 	};
 	if (projected.role && !["resolved-agent", "authored-task"].includes(projected.role.provenance)) fail("invalid-request");
+	if (projected.role?.name !== undefined && (!projected.role.name || projected.role.name.includes("\0") || projected.role.provenance !== "resolved-agent")) fail("invalid-request");
 	if (projected.capabilities?.some((capability) => !["host", "resolved-agent"].includes(capability.provenance))) fail("invalid-request");
 	return freeze({ control: { logicalLaunchId: control.logicalLaunchId, runtimeAttemptId: control.runtimeAttemptId, ownerGeneration: control.ownerGeneration, context: control.context, launchDeadline: control.launchDeadline }, facts: projected, policyContext: snapshotPolicyContext(policyContext) });
 }

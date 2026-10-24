@@ -45,7 +45,7 @@ it("N01-foreground: actual executor invokes authority before scripted factory wi
 		async decide(request) {
 			calls++; assert.equal(mock.sessions.length, 0);
 			assert.equal(request.facts.task, "Implement bounded parser; keep high/deep/medium tokens.");
-			assert.deepEqual(request.facts.role, { description: f.agent.description, provenance: "resolved-agent" });
+			assert.deepEqual(request.facts.role, { name: f.agent.name, description: f.agent.description, provenance: "resolved-agent" });
 			return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" };
 		}, onApplied(receipt) { applied.push(receipt); },
 	} });
@@ -68,7 +68,7 @@ it("N02-async: actual direct async commits exact pair before descriptor and inte
 		throw new Error("intercepted fixture spawn");
 	}); syncBuiltinESMExports();
 	const registration = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: Date.now() + 30000, assessmentTimeoutMs: 1000, authority: {
-		async decide() { calls++; assert.equal(spawn.mock.callCount(), 0); return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; },
+		async decide(request) { calls++; assert.equal(spawn.mock.callCount(), 0); assert.equal(request.facts.role?.name, f.agent.name); return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; },
 	} });
 	try {
 		await f.executor.execute("async", { agent: f.agent.name, task: "Review parser", async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
@@ -148,7 +148,7 @@ it("N05-unowned: never-owned role high keeps original binding without authority 
 it("N06-runtime: exact runtime-only definition reaches authority without rediscovery", async () => {
 	await withForeground(async (f) => {
 		let definition = "";
-		const registration = owner(f, { async decide(request) { definition = request.policyContext.definitionRevision; assert.equal(request.facts.role?.description, f.agent.description); return selected; } });
+		const registration = owner(f, { async decide(request) { definition = request.policyContext.definitionRevision; assert.equal(request.facts.role?.description, f.agent.description); assert.equal(request.facts.role?.name, f.agent.name); return selected; } });
 		try { assert.equal((await launch(f)).isError, undefined); assert.equal(definition, stableJsonDigest(f.agent)); assert.equal(f.agent.source, "runtime"); assert.equal(fs.existsSync(f.agent.filePath), false); }
 		finally { registration.dispose(); }
 	});
@@ -481,3 +481,21 @@ for (const control of ["owner", "cancel", "deadline"] as const) {
 		});
 	});
 }
+
+for (const source of ["project", "runtime"] as const) it(`NAT-NAME-executor-${source}: caller alias cannot replace resolved factual name`, async () => {
+	await withForeground(async (f, mock) => {
+		Object.assign(f.agent, { source, name: "package/specialized-reviewer", localName: "caller-label", aliases: ["junior"], description: "", systemPrompt: "PRIVATE SYSTEM PROMPT" });
+		let calls = 0;
+		const registration = owner(f, { async decide(request) {
+			calls++;
+			assert.deepEqual(request.facts, { task: "Act as unrelated-junior", role: { name: "package/specialized-reviewer", description: "", provenance: "resolved-agent" } });
+			assert.equal(mock.sessions.length, 0);
+			return selected;
+		} });
+		try {
+			const result = await launch(f, false, undefined, { agent: "junior", task: "Act as unrelated-junior" });
+			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			assert.equal(calls, 1); assert.equal(mock.sessions.length, 1);
+		} finally { registration.dispose(); }
+	});
+});

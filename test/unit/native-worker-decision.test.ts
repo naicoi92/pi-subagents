@@ -146,3 +146,20 @@ it("N11-long-file-owned: compatibility never hides explicit ownership or malform
 	assert.throws(() => readNativeWorkerAuthorityRouting({ getSessionFile: () => `${file}\0`, getSessionId: () => "valid-uuid" }), /invalid-request/);
 	assert.throws(() => readNativeWorkerAuthorityRouting({ getSessionFile: () => "missing-owner-key", getSessionId: () => "valid-uuid" }, "captured-generation"), /owner-missing/);
 });
+
+for (const source of ["project", "runtime"] as const) it(`NAT-NAME-${source}: resolved agent name is factual without description or private configuration`, async () => {
+	let calls = 0;
+	const f = fixture({ async decide(request) {
+		calls++;
+		assert.deepEqual(request.facts, { task: "Review parser", role: { name: "package/specialized-reviewer", description: "", provenance: "resolved-agent" } });
+		assert.equal(request.policyContext.original.kind, "verified");
+		if (request.policyContext.original.kind === "verified") assert.equal(request.policyContext.original.thinking, "high");
+		return selected;
+	} });
+	Object.assign(f.input.agent, { source, name: "package/specialized-reviewer", localName: "caller-label", aliases: ["junior"], description: "", systemPrompt: "PRIVATE SYSTEM PROMPT", steering: "PRIVATE STEERING" });
+	try {
+		const prepared = await prepareNativeWorkerDecision(f.input);
+		await prepared.revalidate();
+		assert.equal(calls, 1);
+	} finally { f.registration.dispose(); }
+});

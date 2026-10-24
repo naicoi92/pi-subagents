@@ -99,7 +99,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 	const request = {
 		sessionId: input.sessionId,
 		control: { logicalLaunchId: input.logicalLaunchId, runtimeAttemptId: randomUUID(), ownerGeneration: routing.generation, context: input.context, launchDeadline: deadlineAt },
-		facts: { task: input.task, ...(input.agent.description ? { role: { description: input.agent.description, provenance: "resolved-agent" as const } } : {}) },
+		facts: { task: input.task, role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
 		policyContext: { ...expected, modelContract, original: baseline(input.originalModel, input.originalThinking, input.originalProvenance) },
 		classifierTimeoutMs: routing.assessmentTimeoutMs, signal: input.signal, host,
 	};

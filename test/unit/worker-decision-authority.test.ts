@@ -632,3 +632,38 @@ it("C05-canonical-invalid: malformed declared policy fields fail before assessme
 		assert.equal(calls, 0);
 	} finally { f.registration.dispose(); }
 });
+
+it("CORE-NAME: factual name projection is canonical and changing resolved identity cannot reassess", async () => {
+	let calls = 0; let applied = 0;
+	const f = fixture({ async decide(request) {
+		calls++;
+		assert.deepEqual(request.facts.role, { name: "specialized-reviewer", description: "Reviews parser correctness", provenance: "resolved-agent" });
+		assert.ok(Object.isFrozen(request.facts.role));
+		return decision;
+	}, onApplied() { applied++; } });
+	const role = { ...f.input.facts.role!, name: "specialized-reviewer", thinking: "high", systemPrompt: "PRIVATE", steering: "PRIVATE" };
+	f.input.facts = { ...f.input.facts, role };
+	try {
+		const first = await prepareWorkerDecision(f.input);
+		assert.equal(first.kind, "committed");
+		const reordered = { provenance: "resolved-agent" as const, description: role.description, name: role.name, ignored: "not identity" };
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, facts: { ...f.input.facts, role: reordered } }), first);
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, facts: { ...f.input.facts, role: { ...role, name: "specialized-junior" } } }), { kind: "blocked", reason: "identity-conflict" });
+		assert.equal(calls, 1); assert.equal(applied, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("CORE-NAME-invalid: only nonempty resolved-agent names are accepted before assessment", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { calls++; return decision; } });
+	try {
+		for (const role of [
+			{ name: "inferred-reviewer", description: "task", provenance: "authored-task" },
+			{ name: "", description: "role", provenance: "resolved-agent" },
+			{ name: "bad\0name", description: "role", provenance: "resolved-agent" },
+			{ name: null, description: "role", provenance: "resolved-agent" },
+			{ name: 42, description: "role", provenance: "resolved-agent" },
+		]) assert.deepEqual(await prepareWorkerDecision({ ...f.input, facts: { ...f.input.facts, role } } as unknown as PrepareWorkerDecisionInput), { kind: "blocked", reason: "invalid-request" });
+		assert.equal(calls, 0);
+	} finally { f.registration.dispose(); }
+});
