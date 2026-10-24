@@ -1,0 +1,521 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import {
+	disposeWorkerDecisionSession,
+	getWorkerDecisionState,
+	prepareWorkerDecision,
+	registerWorkerDecisionAuthority,
+	WorkerDecisionAuthorityError,
+	type AppliedWorkerDecision,
+	type PrepareWorkerDecisionInput,
+	type WorkerDecision,
+	type WorkerDecisionAuthority,
+	type WorkerDecisionClock,
+} from "../../src/api/worker-decision-authority.ts";
+
+class Clock implements WorkerDecisionClock {
+	time = 1000;
+	timers = new Set<{ at: number; callback: () => void }>();
+	now = () => this.time;
+	schedule = (at: number, callback: () => void) => {
+		const timer = { at, callback };
+		this.timers.add(timer);
+		return () => { this.timers.delete(timer); };
+	};
+	advance(at: number) {
+		this.time = at;
+		for (const timer of [...this.timers].sort((a, b) => a.at - b.at)) {
+			if (timer.at <= at && this.timers.delete(timer)) timer.callback();
+		}
+	}
+}
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => { resolve = done; });
+	return { promise, resolve };
+}
+
+const pair = { model: "provider/target", thinking: "medium" as const };
+const decision: WorkerDecision = { kind: "apply", ...pair, reason: "assessed" };
+let sequence = 0;
+function fixture(authority?: WorkerDecisionAuthority) {
+	const clock = new Clock();
+	const sessionId = `worker-authority-test-${++sequence}`;
+	const applied: AppliedWorkerDecision[] = [];
+	const registration = registerWorkerDecisionAuthority({
+		sessionId, lifetimeDeadline: 10000,
+		authority: authority ?? { async decide() { return decision; }, onApplied(receipt) { applied.push(receipt); } },
+	});
+	const input: { -readonly [Key in keyof PrepareWorkerDecisionInput]: PrepareWorkerDecisionInput[Key] } = {
+		sessionId,
+		control: { logicalLaunchId: "leaf-1", runtimeAttemptId: "attempt-1", ownerGeneration: registration.generation, context: "fresh", launchDeadline: 5000 },
+		facts: { task: "Implement bounded parser; preserve high/deep/medium tokens.", role: { description: "Reviews parser correctness", provenance: "resolved-agent" }, capabilities: [{ description: "Can run parser unit tests", provenance: "host" }] },
+		policyContext: { definitionRevision: "definition-1", constraintRevision: "constraints-1", modelContract: { kind: "selectable", models: ["provider/target", "provider/original"] }, original: { kind: "verified", model: "provider/original", thinking: "low", provenance: "host-effective", definitionRevision: "definition-1", constraintRevision: "constraints-1" } },
+		classifierTimeoutMs: 1000,
+		clock,
+		host: {
+			getCurrentRevisions() { return { definitionRevision: "definition-1", constraintRevision: "constraints-1" }; },
+			async resolveTarget(model) { return { kind: "resolved", model, supportedThinking: ["low", "medium"], baseline: { kind: "unresolved", reason: "thinking-unresolved" }, definitionRevision: "definition-1", constraintRevision: "constraints-1" }; },
+			async validate() { return { kind: "valid" }; },
+		},
+	};
+	return { clock, sessionId, registration, input, applied };
+}
+
+it("C01-duplicate: one originating session rejects a second owner", () => {
+	const f = fixture();
+	try {
+		assert.throws(() => registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { return decision; } } }), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "owner-conflict");
+	} finally { f.registration.dispose(); }
+});
+
+it("C02-pair: trusted validation precedes exact logical commitment", async () => {
+	const f = fixture();
+	const validated = deferred<{ kind: "valid" }>();
+	const entered = deferred<void>();
+	f.input.host.validate = async (selected) => { assert.deepEqual(selected, pair); entered.resolve(); return validated.promise; };
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		await entered.promise;
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "consumed", state: "pending" });
+		assert.equal(f.applied.length, 0);
+		validated.resolve({ kind: "valid" });
+		const result = await pending;
+		assert.equal(result.kind, "committed");
+		if (result.kind !== "committed") return;
+		assert.equal(result.receipt.model, "provider/target");
+		assert.equal(result.receipt.thinking, "medium");
+		assert.equal(result.receipt.reason, "assessed");
+		assert.match(result.receipt.digest, /^[a-f0-9]{64}$/);
+		assert.equal(f.applied.length, 1);
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "committed", receipt: result.receipt });
+	} finally { f.registration.dispose(); }
+});
+
+it("C07-missing: configured role high cannot fill missing effort", async () => {
+	const f = fixture({ async decide() { return { kind: "apply", model: "provider/target", reason: "assessed" } as WorkerDecision; } });
+	f.input.policyContext = { ...f.input.policyContext, original: { kind: "verified", model: "provider/role", thinking: "high", provenance: "explicit-launch", definitionRevision: "definition-1", constraintRevision: "constraints-1" } };
+	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-decision" }); assert.equal(f.applied.length, 0); }
+	finally { f.registration.dispose(); }
+});
+
+it("C03-projection: facts exclude configured thinking while private policy retains baseline", async () => {
+	const f = fixture({ async decide(request) {
+		assert.deepEqual(request.facts, {
+			task: "Implement bounded parser; preserve high/deep/medium tokens.",
+			role: { description: "Reviews parser correctness", provenance: "resolved-agent" },
+			capabilities: [{ description: "Can run parser unit tests", provenance: "host" }],
+		});
+		assert.equal(request.policyContext.original.kind, "verified");
+		assert.equal("thinking" in request.policyContext.original && request.policyContext.original.thinking, "low");
+		assert.ok(Object.isFrozen(request.facts));
+		return decision;
+	} });
+	Object.assign(f.input.facts, { thinking: "high", routingAdvice: "Always choose high" });
+	Object.assign(f.input.facts.role!, { thinking: "high", configuredModel: "provider/role" });
+	try { assert.equal((await prepareWorkerDecision(f.input)).kind, "committed"); }
+	finally { f.registration.dispose(); }
+});
+
+it("C04-cancel: requester abort stops pending callback without receipt", async () => {
+	const entered = deferred<void>();
+	let callbackSignal!: AbortSignal;
+	const f = fixture({ async decide(_, context) { callbackSignal = context.signal; entered.resolve(); return new Promise(() => {}); } });
+	const cancellation = new AbortController();
+	f.input.signal = cancellation.signal;
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		await entered.promise;
+		cancellation.abort();
+		assert.deepEqual(await pending, { kind: "blocked", reason: "cancelled" });
+		assert.equal(callbackSignal.aborted, true);
+		assert.equal(f.applied.length, 0);
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-pending: duplicate delivery joins one assessment", async () => {
+	let calls = 0;
+	const answer = deferred<WorkerDecision>();
+	const f = fixture({ async decide() { calls++; return answer.promise; } });
+	try {
+		const first = prepareWorkerDecision(f.input);
+		const duplicate = prepareWorkerDecision(f.input);
+		answer.resolve(decision);
+		assert.deepEqual(await duplicate, await first);
+		assert.equal(calls, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("C06-cutoff: owner retains explicit original pair after classifier cutoff before hard deadline", async () => {
+	const entered = deferred<void>();
+	const assessment = deferred<void>();
+	let calls = 0;
+	const f = fixture({ async decide(request, context) {
+		calls++;
+		assert.equal(context.assessmentCutoff, 2000);
+		assert.equal(context.hardDeadline, 3000);
+		assert.equal(context.assessmentAvailable, true);
+		entered.resolve();
+		await assessment.promise;
+		assert.equal(context.signal.aborted, false);
+		assert.equal(request.policyContext.original.kind, "verified");
+		return { kind: "apply", model: "provider/original", thinking: "low", reason: "verified-original-retained" };
+	} });
+	f.input.control = { ...f.input.control, launchDeadline: 3000 };
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		await entered.promise;
+		f.clock.advance(2000);
+		assessment.resolve();
+		const result = await pending;
+		assert.equal(result.kind, "committed");
+		if (result.kind === "committed") assert.deepEqual([result.receipt.model, result.receipt.thinking, result.receipt.reason], ["provider/original", "low", "verified-original-retained"]);
+		assert.equal(calls, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("C07-null: null authority reply is invalid decision, not a retained pair", async () => {
+	const f = fixture({ async decide() { return null as unknown as WorkerDecision; } });
+	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-decision" }); }
+	finally { f.registration.dispose(); }
+});
+
+it("C04-cancel-duplicate: cancelled duplicate cannot reuse committed decision", async () => {
+	const f = fixture();
+	try {
+		assert.equal((await prepareWorkerDecision(f.input)).kind, "committed");
+		const cancellation = new AbortController();
+		cancellation.abort();
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, signal: cancellation.signal }), { kind: "blocked", reason: "cancelled" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C04-cancel-pending-duplicate: cancelled duplicate cannot join pending authority", async () => {
+	const answer = deferred<WorkerDecision>();
+	const f = fixture({ async decide() { return answer.promise; } });
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		const cancellation = new AbortController();
+		cancellation.abort();
+		const duplicate = prepareWorkerDecision({ ...f.input, signal: cancellation.signal });
+		answer.resolve(decision);
+		assert.deepEqual(await duplicate, { kind: "blocked", reason: "cancelled" });
+		assert.equal((await pending).kind, "committed");
+	} finally { f.registration.dispose(); }
+});
+
+it("C01-dispose: old registration cannot dispose replacement owner", async () => {
+	const f = fixture();
+	f.registration.dispose();
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { return decision; } } });
+	f.registration.dispose();
+	try {
+		assert.notEqual(replacement.generation, f.registration.generation);
+		assert.equal((await prepareWorkerDecision({ ...f.input, control: { ...f.input.control, ownerGeneration: replacement.generation } })).kind, "committed");
+	} finally { replacement.dispose(); }
+});
+
+it("C01-missing: never-owned optional path returns explicit unowned, expected owner blocks", async () => {
+	const f = fixture();
+	try {
+		const input = { ...f.input, sessionId: `${f.sessionId}-never-owned`, control: { ...f.input.control, ownerGeneration: undefined } };
+		assert.deepEqual(await prepareWorkerDecision(input), { kind: "unowned" });
+		assert.deepEqual(await prepareWorkerDecision({ ...input, control: { ...input.control, ownerGeneration: "expected-owner" } }), { kind: "blocked", reason: "owner-missing" });
+		f.registration.dispose();
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, control: { ...f.input.control, ownerGeneration: undefined } }), { kind: "blocked", reason: "owner-missing" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C01-session: terminal session disposal blocks registration and preparation", async () => {
+	const f = fixture();
+	disposeWorkerDecisionSession(f.sessionId);
+	assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "session-disposed" });
+	assert.throws(() => registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { return decision; } } }), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "session-disposed");
+	f.registration.dispose();
+});
+
+it("C02-reject: trusted scope rejection prevents commitment", async () => {
+	const f = fixture();
+	f.input.host.validate = async () => ({ kind: "blocked", reason: "scope-denied" });
+	try {
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "scope-denied" });
+		assert.equal(f.applied.length, 0);
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "consumed", state: "blocked" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C02-resolve: owner target query uses trusted resolver without inference or baseline synthesis", async () => {
+	let resolutions = 0;
+	const f = fixture({ async decide(_, context) {
+		const target = await context.resolveTarget("provider/target");
+		assert.deepEqual(target, { kind: "resolved", model: "provider/target", supportedThinking: ["low", "medium"], baseline: { kind: "unresolved", reason: "thinking-unresolved" }, definitionRevision: "definition-1", constraintRevision: "constraints-1" });
+		return decision;
+	} });
+	const resolve = f.input.host.resolveTarget;
+	f.input.host.resolveTarget = async (...args) => { resolutions++; return resolve(...args); };
+	try { assert.equal((await prepareWorkerDecision(f.input)).kind, "committed"); assert.equal(resolutions, 1); }
+	finally { f.registration.dispose(); }
+});
+
+it("C02-revision: live revision changed during validation fences reply", async () => {
+	const f = fixture();
+	f.input.host.validate = async () => { f.input.host.getCurrentRevisions = () => ({ definitionRevision: "definition-1", constraintRevision: "constraints-2" }); return { kind: "valid" }; };
+	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "stale-revisions" }); assert.equal(f.applied.length, 0); }
+	finally { f.registration.dispose(); }
+});
+
+it("C02-notify: notification sees committed receipt once even if observer throws", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { return decision; }, onApplied(receipt) {
+		calls++;
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "committed", receipt });
+		throw new Error("private observer diagnostic");
+	} });
+	try {
+		const result = await prepareWorkerDecision(f.input);
+		assert.equal(result.kind, "committed");
+		assert.equal(result.kind === "committed" && result.notification, "failed");
+		assert.equal((await prepareWorkerDecision(f.input)).kind, "committed");
+		assert.equal(calls, 1);
+		assert.equal(JSON.stringify(result).includes("private observer diagnostic"), false);
+	} finally { f.registration.dispose(); }
+});
+
+it("C04-stale: old generation cannot assess under replacement", async () => {
+	const f = fixture();
+	f.registration.dispose();
+	let calls = 0;
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { calls++; return decision; } } });
+	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "stale-owner" }); assert.equal(calls, 0); }
+	finally { replacement.dispose(); }
+});
+
+it("C04-owner: disposing owner aborts pending callback and discards late reply", async () => {
+	const answer = deferred<WorkerDecision>();
+	const entered = deferred<void>();
+	let signal!: AbortSignal;
+	const f = fixture({ async decide(_, context) { signal = context.signal; entered.resolve(); return answer.promise; } });
+	const pending = prepareWorkerDecision(f.input);
+	await entered.promise;
+	f.registration.dispose();
+	assert.deepEqual(await pending, { kind: "blocked", reason: "stale-owner" });
+	assert.equal(signal.aborted, true);
+	answer.resolve(decision);
+	await Promise.resolve();
+	assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "consumed", state: "blocked" });
+});
+
+it("C04-deadline: authority cannot start at hard deadline", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { calls++; return decision; } });
+	f.clock.advance(5000);
+	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "deadline-exceeded" }); assert.equal(calls, 0); }
+	finally { f.registration.dispose(); }
+});
+
+it("C04-pending-deadline: hung callback settles at hard deadline without reset", async () => {
+	const entered = deferred<void>();
+	const f = fixture({ async decide() { entered.resolve(); return new Promise(() => {}); } });
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		await entered.promise;
+		f.clock.advance(5000);
+		assert.deepEqual(await pending, { kind: "blocked", reason: "deadline-exceeded" });
+		assert.equal(f.clock.timers.size, 0);
+	} finally { f.registration.dispose(); }
+});
+
+it("C04-cancel-joining: aborting joined delivery returns cancelled without cancelling first delivery", async () => {
+	const answer = deferred<WorkerDecision>();
+	const f = fixture({ async decide() { return answer.promise; } });
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		const cancellation = new AbortController();
+		const duplicate = prepareWorkerDecision({ ...f.input, signal: cancellation.signal });
+		cancellation.abort();
+		assert.deepEqual(await duplicate, { kind: "blocked", reason: "cancelled" });
+		answer.resolve(decision);
+		assert.equal((await pending).kind, "committed");
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-repeat: repeat delivery reuses exact commitment and emits one receipt", async () => {
+	const f = fixture();
+	try {
+		const first = await prepareWorkerDecision(f.input);
+		assert.deepEqual(await prepareWorkerDecision(f.input), first);
+		assert.equal(f.applied.length, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-attempt: new runtime attempt revalidates same pair without reassessment", async () => {
+	let calls = 0;
+	let validations = 0;
+	const f = fixture({ async decide() { calls++; return decision; } });
+	f.input.host.validate = async () => { validations++; return { kind: "valid" }; };
+	try {
+		const first = await prepareWorkerDecision(f.input);
+		const recovered = await prepareWorkerDecision({ ...f.input, control: { ...f.input.control, runtimeAttemptId: "attempt-2" } });
+		assert.deepEqual(recovered, first);
+		assert.equal(calls, 1);
+		assert.equal(validations, 2);
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-binding: task or revision changes do not reset stable identity", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { calls++; return decision; } });
+	try {
+		await prepareWorkerDecision(f.input);
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, facts: { task: "Different independent task" } }), { kind: "blocked", reason: "identity-conflict" });
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { ...f.input.policyContext, constraintRevision: "constraints-2" } }), { kind: "blocked", reason: "identity-conflict" });
+		assert.equal(calls, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-consumed: callback crash leaves honest indeterminate claim, never a retry", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { calls++; throw new Error("private task/provider diagnostic"); } });
+	try {
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "consumed-indeterminate" });
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "consumed", state: "indeterminate" });
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "consumed-indeterminate" });
+		assert.equal(calls, 1);
+		assert.equal(JSON.stringify(getWorkerDecisionState(f.sessionId, "leaf-1")).includes("diagnostic"), false);
+	} finally { f.registration.dispose(); }
+});
+
+it("C05-generation: owner succession preserves consumed indeterminate identity", async () => {
+	const f = fixture({ async decide() { throw new Error("crash"); } });
+	await prepareWorkerDecision(f.input);
+	f.registration.dispose();
+	let calls = 0;
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, authority: { async decide() { calls++; return decision; } } });
+	try {
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, control: { ...f.input.control, ownerGeneration: replacement.generation } }), { kind: "blocked", reason: "consumed-indeterminate" });
+		assert.equal(calls, 0);
+	} finally { replacement.dispose(); }
+});
+
+it("C06-exhausted: owner fallback arriving at hard deadline cannot commit", async () => {
+	const answer = deferred<WorkerDecision>();
+	const entered = deferred<void>();
+	const f = fixture({ async decide() { entered.resolve(); return answer.promise; } });
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		await entered.promise;
+		f.clock.advance(5000);
+		answer.resolve({ kind: "apply", model: "provider/original", thinking: "low", reason: "verified-original-retained" });
+		assert.deepEqual(await pending, { kind: "blocked", reason: "deadline-exceeded" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C06-late-validation: resolution cannot extend hard authority budget", async () => {
+	const resolving = deferred<void>();
+	const target = deferred<Awaited<ReturnType<PrepareWorkerDecisionInput["host"]["resolveTarget"]>>>();
+	const f = fixture({ async decide(_, context) { await context.resolveTarget("provider/target"); return decision; } });
+	f.input.host.resolveTarget = async () => { resolving.resolve(); return target.promise; };
+	try {
+		const pending = prepareWorkerDecision(f.input);
+		await resolving.promise;
+		f.clock.advance(5000);
+		assert.deepEqual(await pending, { kind: "blocked", reason: "deadline-exceeded" });
+		target.resolve({ kind: "unresolved", reason: "target-unavailable" });
+	} finally { f.registration.dispose(); }
+});
+
+it("C06-no-assessment: live owner may explicitly retain pair when no classifier time remains", async () => {
+	const f = fixture({ async decide(_, context) {
+		assert.equal(context.assessmentAvailable, false);
+		assert.equal(context.assessmentCutoff, 900);
+		assert.equal(context.hardDeadline, 1400);
+		return { kind: "apply", model: "provider/original", thinking: "low", reason: "verified-original-retained" };
+	} });
+	f.input.control = { ...f.input.control, launchDeadline: 1400 };
+	try { assert.equal((await prepareWorkerDecision(f.input)).kind, "committed"); }
+	finally { f.registration.dispose(); }
+});
+
+for (const [id, invalid] of [
+	["C07-unknown", { kind: "apply", model: "provider/target", thinking: "ultra", reason: "assessed" }],
+	["C07-model", { kind: "apply", model: "target:high", thinking: "medium", reason: "assessed" }],
+	["C07-reason", { kind: "apply", model: "provider/target", thinking: "medium", reason: "private task/provider error" }],
+	["C07-missing-model", { kind: "apply", thinking: "medium", reason: "assessed" }],
+] as const) {
+	it(`${id}: invalid reply cannot synthesize a complete decision`, async () => {
+		const f = fixture({ async decide() { return invalid as unknown as WorkerDecision; } });
+		try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-decision" }); }
+		finally { f.registration.dispose(); }
+	});
+}
+
+for (const [id, reason] of [["C02-ceiling", "ceiling-denied"], ["C02-support", "unsupported-thinking"]] as const) {
+	it(`${id}: trusted final admission refusal never clamps around policy`, async () => {
+		const f = fixture();
+		f.input.host.validate = async () => ({ kind: "blocked", reason });
+		try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason }); assert.equal(f.applied.length, 0); }
+		finally { f.registration.dispose(); }
+	});
+}
+
+it("C04-owner-lifetime: hard deadline uses earlier finite owner lifetime", async () => {
+	const entered = deferred<void>();
+	const f = fixture();
+	f.registration.dispose();
+	const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 2200, authority: { async decide(_, context) {
+		assert.equal(context.hardDeadline, 2200);
+		assert.equal(context.assessmentCutoff, 1700);
+		entered.resolve();
+		return new Promise(() => {});
+	} } });
+	try {
+		const pending = prepareWorkerDecision({ ...f.input, control: { ...f.input.control, ownerGeneration: replacement.generation } });
+		await entered.promise;
+		f.clock.advance(2200);
+		assert.deepEqual(await pending, { kind: "blocked", reason: "deadline-exceeded" });
+	} finally { replacement.dispose(); }
+});
+
+it("C04-invalid-deadline: invalid launch deadline cannot reset authority budget", async () => {
+	const f = fixture();
+	try { assert.deepEqual(await prepareWorkerDecision({ ...f.input, control: { ...f.input.control, launchDeadline: Infinity } }), { kind: "blocked", reason: "invalid-deadline" }); }
+	finally { f.registration.dispose(); }
+});
+
+it("C07-null-thinking: null thinking never becomes configured high", async () => {
+	const f = fixture({ async decide() { return { kind: "apply", model: "provider/target", thinking: null, reason: "assessed" } as unknown as WorkerDecision; } });
+	try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-decision" }); }
+	finally { f.registration.dispose(); }
+});
+
+it("C02-closed-context: retained callback context cannot resolve targets after preparation ends", async () => {
+	let context!: Parameters<WorkerDecisionAuthority["decide"]>[1];
+	let resolutions = 0;
+	const f = fixture({ async decide(_, supplied) { context = supplied; return decision; } });
+	const resolve = f.input.host.resolveTarget;
+	f.input.host.resolveTarget = async (...args) => { resolutions++; return resolve(...args); };
+	try {
+		assert.equal((await prepareWorkerDecision(f.input)).kind, "committed");
+		assert.equal(context.signal.aborted, true);
+		await assert.rejects(context.resolveTarget("provider/target"), (error) => error instanceof WorkerDecisionAuthorityError && error.reason === "cancelled");
+		assert.equal(resolutions, 0);
+	} finally { f.registration.dispose(); }
+});
+
+it("C02-notify-dispose: disposal by post-commit observer cannot erase logical commitment", async () => {
+	const f = fixture({ async decide() { return decision; }, onApplied() { f.registration.dispose(); } });
+	const result = await prepareWorkerDecision(f.input);
+	assert.equal(result.kind, "committed");
+	assert.equal(getWorkerDecisionState(f.sessionId, "leaf-1").kind, "committed");
+});
+
+it("C06-admission: classifier cutoff starts at admission, not after host validation setup", async () => {
+	const f = fixture({ async decide(_, context) {
+		assert.equal(context.assessmentCutoff, 2000);
+		return decision;
+	} });
+	f.input.host.getCurrentRevisions = () => { f.clock.time = 1200; return { definitionRevision: "definition-1", constraintRevision: "constraints-1" }; };
+	try { assert.equal((await prepareWorkerDecision(f.input)).kind, "committed"); }
+	finally { f.registration.dispose(); }
+});

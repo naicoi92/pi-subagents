@@ -246,6 +246,10 @@ The API validates and caches bounded display fields when the caller registers or
 
 External jobs are observational. The caller owns execution, persistence, cancellation, and result delivery. FleetView does not expose stop, steer, resume, cancel, or inspector controls for them. Supplied report and transcript paths are shown as bounded text only; FleetView does not read arbitrary external paths.
 
+## Worker decision authority API core
+
+Trusted hosts can import session registration and asynchronous leaf-decision preparation from `pi-subagents/worker-decision-authority`. This is an API core only: native executors are not wired to it, and registration does not intercept launches. See [worker decision authority](worker-decision-authority.md) for owner fencing, explicit model/thinking pairs, private policy context, trusted validation, deadlines and in-memory consumption limits.
+
 ## Launch contract preflight
 
 Use `pi-subagents/preflight` when an extension needs to inspect the resolved child launch contract before deciding whether to run anything:

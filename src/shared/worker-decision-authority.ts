@@ -1,0 +1,315 @@
+import { createHash, randomUUID } from "node:crypto";
+import { THINKING_LEVELS, type ThinkingLevel } from "./model-info.ts";
+
+export type WorkerDecisionReason = "assessed" | "verified-original-retained" | "verified-target-retained";
+export type WorkerDecisionBlockReason =
+	| "owner-conflict" | "owner-missing" | "stale-owner" | "session-disposed"
+	| "cancelled" | "deadline-exceeded" | "invalid-deadline" | "invalid-request"
+	| "invalid-decision" | "assessment-unavailable" | "baseline-unresolved"
+	| "scope-denied" | "ceiling-denied" | "target-unavailable" | "unsupported-thinking"
+	| "stale-revisions" | "identity-conflict" | "consumed-indeterminate";
+
+export class WorkerDecisionAuthorityError extends Error {
+	readonly reason: WorkerDecisionBlockReason;
+	constructor(reason: WorkerDecisionBlockReason) {
+		super(`Worker decision authority blocked: ${reason}.`);
+		this.name = "WorkerDecisionAuthorityError";
+		this.reason = reason;
+	}
+}
+
+export interface WorkerDecisionPair { readonly model: string; readonly thinking: ThinkingLevel }
+export interface WorkerDecisionRevisions { readonly definitionRevision: string; readonly constraintRevision: string }
+export type WorkerDecisionBaseline =
+	| (WorkerDecisionPair & WorkerDecisionRevisions & { readonly kind: "verified"; readonly provenance: "host-effective" | "explicit-launch" })
+	| { readonly kind: "unresolved"; readonly reason: "model-unresolved" | "thinking-unresolved" | "provenance-unresolved" };
+
+/** Only this explicit factual projection is suitable for assessment; policyContext is private to the owner. */
+export interface WorkerDecisionFacts {
+	readonly task: string;
+	readonly role?: { readonly description: string; readonly provenance: "resolved-agent" | "authored-task" };
+	readonly capabilities?: readonly { readonly description: string; readonly provenance: "host" | "resolved-agent" }[];
+}
+export interface WorkerDecisionPolicyContext extends WorkerDecisionRevisions {
+	readonly modelContract: { readonly kind: "fixed"; readonly model: string } | { readonly kind: "selectable"; readonly models: readonly string[] };
+	readonly original: WorkerDecisionBaseline;
+}
+export interface WorkerDecisionControl {
+	readonly logicalLaunchId: string;
+	/** Correlation only; changing attempts never grants another assessment. */
+	readonly runtimeAttemptId: string;
+	readonly ownerGeneration?: string;
+	readonly context: "fresh" | "fork";
+	readonly launchDeadline?: number;
+}
+export interface WorkerDecisionRequest {
+	readonly control: WorkerDecisionControl;
+	readonly facts: WorkerDecisionFacts;
+	readonly policyContext: WorkerDecisionPolicyContext;
+}
+export type WorkerDecision =
+	| (WorkerDecisionPair & { readonly kind: "apply"; readonly requestedThinking?: ThinkingLevel; readonly reason: WorkerDecisionReason })
+	| { readonly kind: "reject"; readonly reason: "assessment-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" | "target-unavailable" };
+export type WorkerDecisionTarget =
+	| (WorkerDecisionRevisions & { readonly kind: "resolved"; readonly model: string; readonly supportedThinking: readonly ThinkingLevel[]; readonly baseline: WorkerDecisionBaseline })
+	| { readonly kind: "unresolved"; readonly reason: "target-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" };
+export interface WorkerDecisionContext {
+	readonly signal: AbortSignal;
+	/** Classifier cutoff does not expire authority or authorize executor fallback. */
+	readonly assessmentCutoff: number;
+	readonly hardDeadline: number;
+	readonly assessmentAvailable: boolean;
+	resolveTarget(model: string): Promise<WorkerDecisionTarget>;
+}
+export interface AppliedWorkerDecision extends WorkerDecisionPair, WorkerDecisionRevisions {
+	readonly logicalLaunchId: string;
+	readonly ownerGeneration: string;
+	readonly requestedThinking?: ThinkingLevel;
+	readonly reason: WorkerDecisionReason;
+	readonly digest: string;
+}
+export interface WorkerDecisionAuthority {
+	decide(request: WorkerDecisionRequest, context: WorkerDecisionContext): Promise<WorkerDecision>;
+	/** Logical commitment only, never proof of spawn or provider execution. Invoked at most once. */
+	onApplied?(receipt: AppliedWorkerDecision): void;
+}
+export interface RegisterWorkerDecisionAuthorityInput {
+	sessionId: string;
+	lifetimeDeadline: number;
+	authority: WorkerDecisionAuthority;
+}
+export interface WorkerDecisionAuthorityRegistration { readonly generation: string; dispose(): void }
+
+/** Host callbacks must be side-effect-free: no child/session creation or inference. */
+export interface WorkerDecisionHost {
+	getCurrentRevisions(): WorkerDecisionRevisions;
+	resolveTarget(model: string, request: WorkerDecisionRequest, context: { signal: AbortSignal; hardDeadline: number }): Promise<WorkerDecisionTarget>;
+	/** Authoritatively check exact physical ID, support, scope, ceilings, availability and launch admission. Never substitute a pair. */
+	validate(pair: WorkerDecisionPair, request: WorkerDecisionRequest, context: { signal: AbortSignal; hardDeadline: number }): Promise<{ kind: "valid" } | { kind: "blocked"; reason: "scope-denied" | "ceiling-denied" | "target-unavailable" | "unsupported-thinking" | "stale-revisions" }>;
+}
+export interface WorkerDecisionClock {
+	now(): number;
+	/** Schedule at absolute deadline; return cancellation. Deterministic fixtures need not sleep. */
+	schedule(deadline: number, callback: () => void): () => void;
+}
+export interface PrepareWorkerDecisionInput extends WorkerDecisionRequest {
+	sessionId: string;
+	classifierTimeoutMs: number;
+	signal?: AbortSignal;
+	host: WorkerDecisionHost;
+	clock?: WorkerDecisionClock;
+}
+export type PreparedWorkerDecision =
+	| { readonly kind: "unowned" }
+	| { readonly kind: "blocked"; readonly reason: WorkerDecisionBlockReason }
+	| { readonly kind: "committed"; readonly receipt: AppliedWorkerDecision; readonly notification?: "failed" };
+export type WorkerDecisionState =
+	| { readonly kind: "unconsumed" }
+	| { readonly kind: "consumed"; readonly state: "pending" | "indeterminate" | "blocked" }
+	| { readonly kind: "committed"; readonly receipt: AppliedWorkerDecision };
+
+interface Owner { generation: string; lifetimeDeadline: number; authority: WorkerDecisionAuthority; controller: AbortController }
+interface Entry {
+	binding: string;
+	state: "pending" | "indeterminate" | "blocked" | "committed";
+	promise: Promise<PreparedWorkerDecision>;
+	receipt?: AppliedWorkerDecision;
+}
+interface Session { owner?: Owner; disposed: boolean; ledger: Map<string, Entry> }
+interface Registry { version: 1; sessions: Map<string, Session> }
+const RESOLUTION_RESERVE_MS = 500;
+const REASONS: readonly WorkerDecisionReason[] = ["assessed", "verified-original-retained", "verified-target-retained"];
+const OWNER_REJECTIONS = ["assessment-unavailable", "baseline-unresolved", "scope-denied", "ceiling-denied", "target-unavailable"] as const;
+const defaultClock: WorkerDecisionClock = {
+	now: Date.now,
+	schedule(deadline, callback) {
+		// Node timers overflow beyond 2^31-1 ms; re-arm without expiring authority early.
+		let timer: ReturnType<typeof setTimeout>;
+		const arm = () => { const remaining = deadline - Date.now(); if (remaining <= 0) callback(); else timer = setTimeout(arm, Math.min(remaining, 2147483647)); };
+		arm();
+		return () => clearTimeout(timer);
+	},
+};
+
+function registry(): Registry {
+	const key = Symbol.for("pi-subagents.worker-decision-authority.v1");
+	const root = globalThis as Record<PropertyKey, unknown>;
+	if (root[key] === undefined) root[key] = { version: 1, sessions: new Map() } satisfies Registry;
+	const value = root[key];
+	if (!value || typeof value !== "object" || !("version" in value) || value.version !== 1 || !("sessions" in value) || !(value.sessions instanceof Map)) throw new Error("Malformed or unsupported worker decision authority registry.");
+	return value as Registry;
+}
+function fail(reason: WorkerDecisionBlockReason): never { throw new WorkerDecisionAuthorityError(reason); }
+function isThinking(value: unknown): value is ThinkingLevel { return THINKING_LEVELS.some((level) => value === level); }
+function isPhysicalModel(value: unknown): value is string {
+	return typeof value === "string" && /^[^\s/\0]+\/[^\s\0]+$/.test(value) && !THINKING_LEVELS.some((level) => value.endsWith(`:${level}`));
+}
+function digest(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
+function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionRequest {
+	const { control, facts, policyContext } = input;
+	if (!control.logicalLaunchId || !control.runtimeAttemptId || !["fresh", "fork"].includes(control.context) || typeof facts.task !== "string") fail("invalid-request");
+	// Deliberate allowlist: never spread an agent/config object into assessment facts.
+	const projected: WorkerDecisionFacts = {
+		task: facts.task,
+		...(facts.role ? { role: { description: facts.role.description, provenance: facts.role.provenance } } : {}),
+		...(facts.capabilities ? { capabilities: facts.capabilities.map(({ description, provenance }) => ({ description, provenance })) } : {}),
+	};
+	return freeze({ control: { logicalLaunchId: control.logicalLaunchId, runtimeAttemptId: control.runtimeAttemptId, ownerGeneration: control.ownerGeneration, context: control.context, launchDeadline: control.launchDeadline }, facts: projected, policyContext: structuredClone(policyContext) });
+}
+function freeze<T>(value: T): T {
+	if (value && typeof value === "object") { for (const child of Object.values(value)) freeze(child); Object.freeze(value); }
+	return value;
+}
+
+/** Register one originating-session owner. Disposing aborts callbacks but retains consumed logical identities. */
+export function registerWorkerDecisionAuthority(input: RegisterWorkerDecisionAuthorityInput): WorkerDecisionAuthorityRegistration {
+	if (typeof input.sessionId !== "string" || !input.sessionId || input.sessionId.trim() !== input.sessionId || input.sessionId.length > 256 || input.sessionId.includes("\0")) throw new Error("Worker decision authority requires a trimmed sessionId of at most 256 characters without NUL.");
+	if (!Number.isFinite(input.lifetimeDeadline)) throw new Error("Worker decision authority requires a finite lifetimeDeadline.");
+	if (!input.authority || typeof input.authority.decide !== "function") throw new Error("Worker decision authority requires a decide callback.");
+	const sessions = registry().sessions;
+	let session = sessions.get(input.sessionId);
+	if (session?.disposed) throw new WorkerDecisionAuthorityError("session-disposed");
+	if (session?.owner) throw new WorkerDecisionAuthorityError("owner-conflict");
+	if (!session) { session = { disposed: false, ledger: new Map() }; sessions.set(input.sessionId, session); }
+	const owner: Owner = { generation: randomUUID(), lifetimeDeadline: input.lifetimeDeadline, authority: { decide: input.authority.decide.bind(input.authority), onApplied: input.authority.onApplied?.bind(input.authority) }, controller: new AbortController() };
+	session.owner = owner;
+	return Object.freeze({ generation: owner.generation, dispose() { if (session.owner === owner) { session.owner = undefined; owner.controller.abort(); } } });
+}
+
+/** Mark session terminal; retain tombstones so disposal cannot reset assessment consumption. */
+export function disposeWorkerDecisionSession(sessionId: string): void {
+	const sessions = registry().sessions;
+	let session = sessions.get(sessionId);
+	if (!session) { session = { disposed: true, ledger: new Map() }; sessions.set(sessionId, session); }
+	session.disposed = true;
+	session.owner?.controller.abort();
+	session.owner = undefined;
+}
+
+/** In-memory evidence only: restoring a consumed claim without a decision must block, never reclassify. */
+export function getWorkerDecisionState(sessionId: string, logicalLaunchId: string): WorkerDecisionState {
+	const entry = registry().sessions.get(sessionId)?.ledger.get(logicalLaunchId);
+	if (!entry) return { kind: "unconsumed" };
+	return entry.receipt ? { kind: "committed", receipt: entry.receipt } : { kind: "consumed", state: entry.state as "pending" | "indeterminate" | "blocked" };
+}
+
+/** Claim before callback; duplicates join/reuse. No classifier, fallback selection or native launch occurs here. */
+export async function prepareWorkerDecision(input: PrepareWorkerDecisionInput): Promise<PreparedWorkerDecision> {
+	const session = registry().sessions.get(input.sessionId);
+	if (!session) return input.control.ownerGeneration ? { kind: "blocked", reason: "owner-missing" } : { kind: "unowned" };
+	if (session.disposed) return { kind: "blocked", reason: "session-disposed" };
+	const owner = session.owner;
+	if (!owner) return { kind: "blocked", reason: "owner-missing" };
+	if (input.control.ownerGeneration !== owner.generation) return { kind: "blocked", reason: "stale-owner" };
+	const clock = input.clock ?? defaultClock;
+	const admittedAt = clock.now();
+	const deadlines = [owner.lifetimeDeadline, input.control.launchDeadline].filter((value): value is number => value !== undefined && Number.isFinite(value));
+	const hardDeadline = Math.min(...deadlines);
+	if (!Number.isFinite(hardDeadline) || (input.control.launchDeadline !== undefined && !Number.isFinite(input.control.launchDeadline)) || !Number.isFinite(input.classifierTimeoutMs) || input.classifierTimeoutMs < 0) return { kind: "blocked", reason: "invalid-deadline" };
+	let request: WorkerDecisionRequest;
+	try { request = snapshotRequest(input); } catch { return { kind: "blocked", reason: "invalid-request" }; }
+	const binding = digest({ facts: request.facts, policyContext: request.policyContext, context: request.control.context });
+	const existing = session.ledger.get(request.control.logicalLaunchId);
+	if (existing && existing.binding !== binding) return { kind: "blocked", reason: "identity-conflict" };
+	if (existing?.state === "indeterminate") return { kind: "blocked", reason: "consumed-indeterminate" };
+	if (input.signal?.aborted) return { kind: "blocked", reason: "cancelled" };
+	if (clock.now() >= hardDeadline) return { kind: "blocked", reason: "deadline-exceeded" };
+	if (existing && !existing.receipt) return joinPending(existing.promise, input.signal, clock, hardDeadline);
+	const entry: Entry = existing ?? { binding, state: "pending", promise: Promise.resolve({ kind: "blocked", reason: "consumed-indeterminate" }) };
+	// This synchronous claim survives owner/revision changes; only the first claimant invokes decide.
+	if (!existing) session.ledger.set(request.control.logicalLaunchId, entry);
+	const promise = runPreparation(input, request, session, owner, entry, clock, admittedAt, hardDeadline, existing?.receipt);
+	if (!existing) entry.promise = promise;
+	return promise;
+}
+
+async function runPreparation(input: PrepareWorkerDecisionInput, request: WorkerDecisionRequest, session: Session, owner: Owner, entry: Entry, clock: WorkerDecisionClock, admittedAt: number, hardDeadline: number, retained?: AppliedWorkerDecision): Promise<PreparedWorkerDecision> {
+	const controller = new AbortController();
+	const check = () => {
+		if (session.disposed) fail("session-disposed");
+		if (session.owner !== owner || owner.controller.signal.aborted) fail("stale-owner");
+		if (input.signal?.aborted || controller.signal.aborted) fail("cancelled");
+		if (clock.now() >= hardDeadline) fail("deadline-exceeded");
+		const revisions = input.host.getCurrentRevisions();
+		if (revisions.definitionRevision !== request.policyContext.definitionRevision || revisions.constraintRevision !== request.policyContext.constraintRevision) fail("stale-revisions");
+	};
+	let cancelTimer = () => {};
+	let onOwnerAbort = () => {};
+	let onCancel = () => {};
+	try {
+		check();
+		const interrupted = new Promise<never>((_, reject) => {
+			const stop = (reason: WorkerDecisionBlockReason) => {
+				// Commitment wins over observer-triggered disposal; it cannot be rolled back.
+				if (entry.receipt && !retained) return;
+				controller.abort();
+				reject(new WorkerDecisionAuthorityError(reason));
+			};
+			onOwnerAbort = () => stop(session.disposed ? "session-disposed" : "stale-owner");
+			onCancel = () => stop("cancelled");
+			owner.controller.signal.addEventListener("abort", onOwnerAbort, { once: true });
+			input.signal?.addEventListener("abort", onCancel, { once: true });
+			cancelTimer = clock.schedule(hardDeadline, () => stop("deadline-exceeded"));
+		});
+		const assessmentCutoff = Math.min(admittedAt + input.classifierTimeoutMs, hardDeadline - RESOLUTION_RESERVE_MS);
+		const context: WorkerDecisionContext = Object.freeze({
+			signal: controller.signal, assessmentCutoff, hardDeadline, assessmentAvailable: clock.now() < assessmentCutoff,
+			async resolveTarget(model: string): Promise<WorkerDecisionTarget> {
+				check();
+				if (!isPhysicalModel(model)) fail("invalid-decision");
+				const target = await Promise.race([input.host.resolveTarget(model, request, { signal: controller.signal, hardDeadline }), interrupted]);
+				check();
+				if (target.kind === "resolved" && (target.model !== model || target.definitionRevision !== request.policyContext.definitionRevision || target.constraintRevision !== request.policyContext.constraintRevision)) fail("stale-revisions");
+				return freeze(structuredClone(target));
+			},
+		});
+		const work = async (): Promise<PreparedWorkerDecision> => {
+			// Yield until claim.promise is installed, including for reentrant callbacks.
+			await Promise.resolve();
+			check();
+			const rawReply: unknown = retained ?? await owner.authority.decide(request, context);
+			check();
+			if (!rawReply || typeof rawReply !== "object" || Array.isArray(rawReply)) fail("invalid-decision");
+			const reply = structuredClone(rawReply) as WorkerDecision | AppliedWorkerDecision;
+			if (!retained && "kind" in reply && reply.kind === "reject") {
+				if (!OWNER_REJECTIONS.some((reason) => reason === reply.reason)) fail("invalid-decision");
+				fail(reply.reason);
+			}
+			if (!retained && (!("kind" in reply) || reply.kind !== "apply")) fail("invalid-decision");
+			if (!("model" in reply) || !("thinking" in reply) || !isPhysicalModel(reply.model) || !isThinking(reply.thinking) || !REASONS.some((reason) => reason === reply.reason) || ("requestedThinking" in reply && reply.requestedThinking !== undefined && !isThinking(reply.requestedThinking))) fail("invalid-decision");
+			const selected = Object.freeze({ model: reply.model, thinking: reply.thinking });
+			const validated = await input.host.validate(selected, request, { signal: controller.signal, hardDeadline });
+			check();
+			if (validated.kind !== "valid") fail(validated.reason);
+			if (retained) return { kind: "committed", receipt: retained };
+			const content = { ...selected, logicalLaunchId: request.control.logicalLaunchId, ownerGeneration: owner.generation, definitionRevision: request.policyContext.definitionRevision, constraintRevision: request.policyContext.constraintRevision, reason: reply.reason as WorkerDecisionReason, ...("requestedThinking" in reply && reply.requestedThinking ? { requestedThinking: reply.requestedThinking as ThinkingLevel } : {}) };
+			const receipt: AppliedWorkerDecision = Object.freeze({ ...content, digest: digest(content) });
+			entry.receipt = receipt;
+			entry.state = "committed";
+			try { owner.authority.onApplied?.(receipt); } catch { return { kind: "committed", receipt, notification: "failed" }; }
+			return { kind: "committed", receipt };
+		};
+		return await Promise.race([work(), interrupted]);
+	} catch (error) {
+		const reason = error instanceof WorkerDecisionAuthorityError ? error.reason : "consumed-indeterminate";
+		if (!retained) entry.state = reason === "consumed-indeterminate" ? "indeterminate" : "blocked";
+		return { kind: "blocked", reason };
+	} finally {
+		cancelTimer();
+		owner.controller.signal.removeEventListener("abort", onOwnerAbort);
+		input.signal?.removeEventListener("abort", onCancel);
+		controller.abort();
+	}
+}
+
+async function joinPending(pending: Promise<PreparedWorkerDecision>, signal: AbortSignal | undefined, clock: WorkerDecisionClock, hardDeadline: number): Promise<PreparedWorkerDecision> {
+	let cancelTimer = () => {};
+	let onCancel = () => {};
+	try {
+		return await Promise.race([pending, new Promise<PreparedWorkerDecision>((resolve) => {
+			onCancel = () => resolve({ kind: "blocked", reason: "cancelled" });
+			signal?.addEventListener("abort", onCancel, { once: true });
+			cancelTimer = clock.schedule(hardDeadline, () => resolve({ kind: "blocked", reason: "deadline-exceeded" }));
+		})]);
+	} finally { cancelTimer(); signal?.removeEventListener("abort", onCancel); }
+}
