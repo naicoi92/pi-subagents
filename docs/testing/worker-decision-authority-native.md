@@ -58,3 +58,28 @@ Tests use temporary fixture project settings only. No real user watchdog setting
 Final-guard expansion before fixtures: `N08-watchdog-final-fg-owner`, `N08-watchdog-final-fg-cancel`, `N08-watchdog-final-fg-deadline` invalidate control during the foreground final synchronous watchdog load after attempt revalidation. Same expected zero creation and one owner callback; shared final admission must guard both native boundaries, not only async.
 
 Correction validation: original five actual-executor regressions fail 0/5 on review base (deny create/spawn `1 !== 0`, allow `0 !== 1`, late deny spawn `1 !== 0`). Final correction fixtures pass 12/12, covering exact pair, late FG/async tightening and owner/generation/cancel/deadline invalidation during final policy loading. Focused union passes 307/307 = prior parent 293 cases + 12 new correction cases + 2 unchanged watchdog-rule neighbors; overlapping earlier runs are not additive. No provider/native CLI evidence is claimed.
+
+## Public SDK binding and opt-in local CLI proof
+
+Binding acceptance (planned before RED):
+
+| ID | Behavioral test/source | Expected contract |
+| --- | --- | --- |
+| SDK-BIND-01 | `pi-spawn-host-dependency.test.ts`, `child-session-host-sdk.test.ts` | Official JS/package hosts retain absolute public export identity, precedence, and selected-entry failure propagation |
+| SDK-BIND-02/03 | `compiled public SDK binding` | Bun virtual entry AND canonical executable-owned Pi manifest required for public embedded SDK alias; unverified host never uses extension SDK fallback |
+| SDK-BIND-04 | `binary-async-spawn.test.ts`, compiled foreground fixture | Valid and stale explicit npm SDK roots rejected before runner config/spawn; no selected-root retry |
+| SDK-BIND-05 | Compiled spawn fixture and actual async CLI receipt | Existing public binary bootstrap/virtual peers retained; no npm SDK aliases or alternate SDK install |
+
+The opt-in pair `test/fixtures/native-worker-authority-cli-{extension.ts,proof.mjs}` is outside normal test globs. Invocation requires owned artifact directory, one scenario, absolute host executable, expected SDK version, and expected binding kind:
+
+```sh
+node test/fixtures/native-worker-authority-cli-proof.mjs /tmp/owned-proof/foreground foreground /absolute/path/to/pi 1.3.0 compiled-public-sdk
+```
+
+Only deterministic loopback HTTP is used, never hosted inference or a classifier. Temporary HOME/agent directory, empty auth, explicit candidate extensions, offline startup and credential-free environment isolate user configuration. Role baseline `local/baseline:high`; callback commits literal `local/selected:medium`. Actual child HTTP must contain `model=selected`, `reasoning_effort=medium`; completed native receipt must contain `CHILD_RECEIPT_OK`; exactly one callback and commitment share launch identity. Async additionally requires public `processTerminal.state=observed` with runner exit 0 before server closure. Foreground exposes no such terminal field: proof is completed native tool result, session shutdown, and orderly parent close only.
+
+Each invocation records source file hashes/base SHA/dirty status, host command/version/hash, executable-owned SDK manifest/hash, public SDK function identity, isolated config before/after hashes, request projections, audit, raw stdout/stderr and close receipt. Private audit/raw output stays in owned artifact directory. Failed lanes retain dependencies and artifacts, with no kill/retry-until-green.
+
+Bounded local result: Pi-Bolt **0.9.7 / Pi 1.3.0, macOS arm64**, foreground and direct async each passed once on the corrected binding. Root `/Users/naicoi/.pi-bolt/npm/0.9.7/pi-bolt-darwin-arm64`; public alias identity verified, not worktree development SDK 1.2.0. Raw evidence `/tmp/bolt-sdk-binding-evidence/{foreground,async}`. Async run `6a9be597-9dff-44be-a117-6dde528ad9fb`, runner `ced54437-90dc-4fc3-b2fe-a48ec17e4337`, observed exit 0. Official JS Pi 1.4.0 foreground/async evidence already passed at `/tmp/jev-authority-parent-proof-j1iU1N`; unchanged JS selection validated by focused regression tests, not repeated provider executions.
+
+These receipts do not expand the full standalone lifecycle support matrix, prove hosted providers/Jev policy, or cover deferred management resume/revive, chain, fanout, nested authority or crash durability. Source hashes in receipts, not a later documentation-only commit SHA, identify the exact executed candidate.

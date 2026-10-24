@@ -57,3 +57,11 @@ PI_CODING_AGENT_DIR="$(mktemp -d)" "$release_dir/pi/pi" \
 This command targets a source checkout. The published npm package uses the compiled `index.js` entry instead.
 
 Configure a provider in that isolated session, ask for a read-only background child and inspect its notification/run artifacts. This loads only the checkout for that process; it does not install the candidate or reuse normal credentials. Keep the parent alive for notifications.
+
+## SDK provenance and explicit roots
+
+Foreground and detached compiled launches require Bun's virtual entry plus a canonical executable-owned `@earendil-works/pi-coding-agent` manifest. Compiled hosts use their public extension-loader SDK, not the manifest's potentially absent `dist/index.js` or an extension's development SDK. Npm/JS hosts retain absolute public-export loading and existing precedence/fail-closed behavior.
+
+Compatibility correction: compiled hosts now reject `PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT` and injected `piPackageRoot` overrides, whether valid or stale. Previously compiled async ignored stale root errors. Selecting a different npm SDK cannot preserve embedded host identity, so both foreground and async fail closed instead of diverging. `PI_PACKAGE_DIR` remains release-asset configuration, not SDK provenance. Binary bootstrap carries no npm-root override; npm runner transport remains unchanged.
+
+A bounded local-provider authority proof also passed on Pi-Bolt 0.9.7 (embedded Pi 1.3.0), macOS arm64. See [native authority proof](testing/worker-decision-authority-native.md#public-sdk-binding-and-opt-in-local-cli-proof) for exact evidence and limits. This is not the full official Linux standalone lifecycle gate or general support for other packagers.

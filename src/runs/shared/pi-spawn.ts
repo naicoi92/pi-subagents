@@ -72,9 +72,19 @@ export function resolveHostDependencyPiPackageRoot(entry = process.argv[1]): str
 	}
 }
 
+export type HostPiSdkBinding =
+	| { kind: "package-entry"; root: string }
+	| { kind: "compiled-public-sdk"; root: string };
+
+/** Compiled hosts expose SDK through Pi's public extension loader, not manifest files. */
+export function resolveHostPiSdkBinding(deps: PiSpawnDeps = {}): HostPiSdkBinding | undefined {
+	const selection = selectPiPackage(deps);
+	return selection ? { kind: "compiled" in selection ? "compiled-public-sdk" : "package-entry", root: selection.root } : undefined;
+}
+
 /** One SDK root for foreground imports and detached peer aliases; never retry a selected root. */
 export function resolveHostPiPackageRoot(deps: PiSpawnDeps = {}): string | undefined {
-	return selectPiPackage(deps)?.root;
+	return resolveHostPiSdkBinding(deps)?.root;
 }
 
 export interface PiSpawnDeps {
@@ -152,6 +162,7 @@ function readPiPackageJson(
 }
 
 type PiPackageSelection =
+	| { root: string; compiled: true }
 	| { root: string; cliScript: string }
 	| { root: string; packageJson: PiPackageJson; authoritative: boolean };
 
@@ -174,6 +185,23 @@ function selectPiPackage(deps: PiSpawnDeps): PiPackageSelection | undefined {
 				// Ownership probing is best-effort; an unverified host entry is not a Pi CLI.
 			}
 		}
+	}
+
+	// A virtual Bun entry alone is not SDK provenance. Verify the real image's
+	// owning Pi package, without trusting an executable override or PI_PACKAGE_DIR.
+	if (resolveBunPiExecutable(deps)) {
+		if (deps.piPackageRoot?.trim() || env[PI_CODING_AGENT_PACKAGE_ROOT_ENV]?.trim()) {
+			throw new Error(`Compiled Pi uses its embedded SDK; ${PI_CODING_AGENT_PACKAGE_ROOT_ENV} and piPackageRoot overrides are not supported`);
+		}
+		let root: string | undefined;
+		try {
+			root = findPiPackageRootFromEntry(realpathSync(deps.execPath ?? process.execPath));
+		} catch (error) {
+			throw new Error("Cannot verify compiled Pi SDK from executable-owned package", { cause: error });
+		}
+		if (!root) throw new Error("Cannot verify compiled Pi SDK from executable-owned package");
+		readPiPackageJson(path.join(root, "package.json"), deps.readFileSync);
+		return { root, compiled: true };
 	}
 
 	const root = (deps.piPackageRoot?.trim() || undefined)
@@ -205,7 +233,7 @@ function selectPiPackage(deps: PiSpawnDeps): PiPackageSelection | undefined {
 
 export function resolvePiCliScript(deps: PiSpawnDeps = {}): string | undefined {
 	const selection = selectPiPackage(deps);
-	if (!selection) return undefined;
+	if (!selection || "compiled" in selection) return undefined;
 	if ("cliScript" in selection) return selection.cliScript;
 	const binField = selection.packageJson.bin;
 	const binPath = typeof binField === "string" ? binField : (binField?.pi ?? Object.values(binField ?? {})[0]);

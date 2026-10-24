@@ -23,7 +23,7 @@ import { applyWatchdogLaunchRules, sendRuleViolationWarning } from "../../watchd
 import { buildChainInstructions, getStepAgents, isDynamicParallelStep, isParallelStep, resolveExistingReadInstructionPaths, resolveExistingReadPaths, writeInitialProgressFile, type ChainStep, type SequentialStep, type StepOverrides } from "../../shared/settings.ts";
 import { isDynamicRunnerGroup, isParallelGroup, type RunnerStep } from "../shared/parallel-utils.ts";
 import type { ContextMode } from "../shared/context-mode.ts";
-import { PI_CODING_AGENT_PACKAGE, resolveBunPiExecutable, resolveHostPiPackageRoot } from "../shared/pi-spawn.ts";
+import { PI_CODING_AGENT_PACKAGE, resolveBunPiExecutable, resolveHostPiPackageRoot, resolveHostPiSdkBinding } from "../shared/pi-spawn.ts";
 import { JITI_ALIAS_ENV, resolveHostPeerAliases } from "./runner-aliases.ts";
 import { preflightLaunchCwd } from "../shared/launch-cwd.ts";
 import { resolveNodeExecutable } from "../../shared/node-executable.ts";
@@ -680,7 +680,8 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 
 	// The compiled host exposes its SDK only through Pi's extension loader.
 	const binaryHost = resolveBunPiExecutable();
-	if (!binaryHost && "error" in piPackageSelection) throw piPackageSelection.error;
+	if (binaryHost) resolveHostPiSdkBinding(); // Validate current compiled provenance/override before config allocation.
+	else if ("error" in piPackageSelection) throw piPackageSelection.error;
 	const nodeExecutable = resolveNodeExecutable();
 	const nativeRunnerSupported = supportsNativeRunner(nodeExecutable);
 	const runner = asyncRunnerSourcePath();

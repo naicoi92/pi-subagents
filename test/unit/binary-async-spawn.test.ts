@@ -7,6 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { executeAsyncChain, executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
 import { makeAgent } from "../support/helpers.ts";
+import { TEMP_ROOT_DIR } from "../../src/shared/types.ts";
 
 // Spawn-boundary tests, not substitutes for the real official Linux loader gate.
 for (const [entry, missingBootstrap] of [
@@ -20,12 +21,17 @@ for (const [entry, missingBootstrap] of [
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "binary-spawn-"));
 		const argv1 = process.argv[1];
 		const bun = Object.getOwnPropertyDescriptor(process.versions, "bun");
+		const exec = Object.getOwnPropertyDescriptor(process, "execPath")!;
+		const image = path.join(root, "pi-native");
+		fs.writeFileSync(image, "compiled image placeholder");
+		fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent" }));
+		Object.defineProperty(process, "execPath", { value: image, configurable: true });
 		const env = { ...process.env };
 		Object.defineProperty(process.versions, "bun", { value: "1.3.14", configurable: true });
 		process.argv[1] = entry;
 		process.env.PI_SUBAGENT_PI_BINARY = path.join(root, "pi-native");
 		process.env.PI_PACKAGE_DIR = path.join(root, "release-assets");
-		process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT = "/stale/npm-root";
+		delete process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT;
 		process.env.JITI_ALIAS = '{"stale":"alias"}';
 		process.env.PI_SUBAGENT_PARENT_SESSION = "ambient-other-root";
 		const spawn = t.mock.method(childProcess, "spawn", () => { throw new Error("captured binary spawn"); });
@@ -35,6 +41,21 @@ for (const [entry, missingBootstrap] of [
 		}
 		syncBuiltinESMExports();
 		try {
+			for (const override of ["/stale/npm-root", root]) {
+				process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT = override;
+				const before = fs.existsSync(TEMP_ROOT_DIR) ? fs.readdirSync(TEMP_ROOT_DIR).filter((name) => name.startsWith("async-cfg-")).sort() : [];
+				const rejected = executeAsyncSingle("binary-override", {
+					agent: "worker", task: "Inspect files", agentConfig: makeAgent("worker"),
+					ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "binary-spawn" },
+					artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+					shareEnabled: false, sessionRoot: path.join(root, "sessions"), maxSubagentDepth: 1, acceptance: false,
+				});
+				assert.equal(rejected.isError, true);
+				assert.match(rejected.content[0]!.text, /Compiled Pi uses its embedded SDK/);
+				assert.equal(spawn.mock.callCount(), 0);
+				assert.deepEqual(fs.existsSync(TEMP_ROOT_DIR) ? fs.readdirSync(TEMP_ROOT_DIR).filter((name) => name.startsWith("async-cfg-")).sort() : [], before, "no runner config allocation");
+			}
+			delete process.env.PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT;
 			const result = executeAsyncSingle(`binary-${missingBootstrap}`, {
 				agent: "worker", task: "Inspect files", agentConfig: makeAgent("worker"),
 				ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "binary-spawn" },
@@ -105,6 +126,7 @@ for (const [entry, missingBootstrap] of [
 			t.mock.restoreAll();
 			syncBuiltinESMExports();
 			process.argv[1] = argv1;
+			Object.defineProperty(process, "execPath", exec);
 			if (bun) Object.defineProperty(process.versions, "bun", bun);
 			else delete process.versions.bun;
 			for (const key of Object.keys(process.env)) if (!(key in env)) delete process.env[key];

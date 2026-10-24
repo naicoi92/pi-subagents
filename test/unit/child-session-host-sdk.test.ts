@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, it } from "node:test";
 import { createDefaultChildSessionFactory, loadHostPiCodingAgent } from "../../src/runs/shared/child-session.ts";
 import { resolvePackageSubpath } from "../../src/runs/background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE_ROOT_ENV } from "../../src/shared/utils.ts";
+import { resolveHostPiSdkBinding } from "../../src/runs/shared/pi-spawn.ts";
 
 declare global {
 	// eslint-disable-next-line no-var
@@ -219,5 +220,42 @@ describe("loadHostPiCodingAgent", () => {
 		fs.writeFileSync(path.join(wrong, "dist", "index.js"), "throw new Error('must not be imported');");
 		process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV] = wrong;
 		await assert.rejects(loadHostPiCodingAgent(), /expected "@earendil-works\/pi-coding-agent"/);
+	});
+});
+
+describe("compiled public SDK binding", () => {
+	it("loads public host alias only for verified executable-owned package, rejecting explicit roots", async (t) => {
+		const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "compiled-host-sdk-"));
+		const exec = Object.getOwnPropertyDescriptor(process, "execPath")!;
+		const bun = Object.getOwnPropertyDescriptor(process.versions, "bun");
+		const argv = process.argv[1];
+		const override = process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV];
+		t.after(() => {
+			Object.defineProperty(process, "execPath", exec);
+			if (bun) Object.defineProperty(process.versions, "bun", bun); else delete process.versions.bun;
+			process.argv[1] = argv;
+			if (override === undefined) delete process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV]; else process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV] = override;
+			fs.rmSync(tmp, { recursive: true, force: true });
+		});
+		const executable = path.join(tmp, "pi-bin");
+		fs.writeFileSync(executable, "compiled image placeholder");
+		Object.defineProperty(process, "execPath", { value: executable, configurable: true });
+		Object.defineProperty(process.versions, "bun", { value: "1.4.3", configurable: true });
+		process.argv[1] = "/$bunfs/root/pi";
+		delete process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV];
+		await assert.rejects(loadHostPiCodingAgent(), /Cannot verify compiled Pi SDK/);
+		fs.writeFileSync(path.join(tmp, "package.json"), "{ malformed");
+		await assert.rejects(loadHostPiCodingAgent(), /Cannot verify compiled Pi SDK/);
+		writeManifest(tmp, { name: "not-pi" });
+		await assert.rejects(loadHostPiCodingAgent(), /Cannot verify compiled Pi SDK/);
+		writeManifest(tmp, { name: "@earendil-works/pi-coding-agent", exports: { ".": "./dist/index.js" } });
+		assert.deepEqual(resolveHostPiSdkBinding({ env: { PI_PACKAGE_DIR: "/untrusted-assets", PI_SUBAGENT_PI_BINARY: "/other/pi" } }), { kind: "compiled-public-sdk", root: fs.realpathSync(tmp) });
+		assert.throws(() => resolveHostPiSdkBinding({ piPackageRoot: tmp }), /Compiled Pi uses its embedded SDK/);
+		const publicSdk = await import("@earendil-works/pi-coding-agent");
+		assert.equal((await loadHostPiCodingAgent()).createAgentSession, publicSdk.createAgentSession);
+		for (const root of ["/absent-sdk", tmp]) {
+			process.env[PI_CODING_AGENT_PACKAGE_ROOT_ENV] = root;
+			await assert.rejects(loadHostPiCodingAgent(), /Compiled Pi uses its embedded SDK.*PI_SUBAGENTS_PI_CODING_AGENT_PACKAGE_ROOT/);
+		}
 	});
 });
