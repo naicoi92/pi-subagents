@@ -41,6 +41,8 @@ export interface NativeWorkerDecision {
 	/** Each legitimate runtime attempt revalidates the commitment without another assessment. */
 	revalidate(): Promise<void>;
 	assertCurrent(): void;
+	/** Reload live admission synchronously, then fence authority after all external checks. */
+	assertAdmissible(): void;
 }
 
 /** Origin-process preparation only. Deferred runner/nested transport is not implemented here. */
@@ -120,5 +122,15 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		return result.receipt;
 	};
 	const receipt = await prepare();
-	return { receipt, deadlineAt, assertCurrent, async revalidate() { await prepare(); } };
+	return {
+		receipt, deadlineAt, assertCurrent,
+		assertAdmissible() {
+			assertCurrent();
+			const validation = validatePair(receipt);
+			// Admission loads external policy; its callbacks cannot invalidate authority then launch.
+			assertCurrent();
+			if (validation.kind === "blocked") throw new WorkerDecisionAuthorityError(validation.reason);
+		},
+		async revalidate() { await prepare(); },
+	};
 }

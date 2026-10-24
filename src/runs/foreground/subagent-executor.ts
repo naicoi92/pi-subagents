@@ -3640,7 +3640,10 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 				source: modelOrigin === "explicit" ? "explicit" : "inherited",
 			});
 		const modelOverrideFromParent = modelOrigin === "inherited";
-		const launchRuleError = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: a.name, model: modelOverride ?? (parentModel && `${parentModel.provider}/${parentModel.id}`), warn: (violation) => deps.watchdog?.displayRuleWarning(violation) });
+		const launchRuleModel = data.nativeWorkerDecision
+			? `${data.nativeWorkerDecision.receipt.model}:${data.nativeWorkerDecision.receipt.thinking}`
+			: modelOverride ?? (parentModel && `${parentModel.provider}/${parentModel.id}`);
+		const launchRuleError = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: a.name, model: launchRuleModel, warn: (violation) => deps.watchdog?.displayRuleWarning(violation) });
 		if (launchRuleError) return toExecutionErrorResult(params, new Error(launchRuleError), data.contextPolicy.contextSummary);
 		if (data.nativeWorkerDecision) await data.nativeWorkerDecision.revalidate();
 		const asyncResult = await executeAsyncSingle(id, compactOptional<Parameters<typeof executeAsyncSingle>[1]>({
@@ -3701,7 +3704,7 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			beforeNativeSpawn: data.nativeWorkerDecision ? (model, thinking) => {
 				const decision = data.nativeWorkerDecision!;
 				if (model !== `${decision.receipt.model}:${decision.receipt.thinking}` || thinking !== decision.receipt.thinking) throw new WorkerDecisionAuthorityError("invalid-decision");
-				decision.assertCurrent();
+				decision.assertAdmissible();
 			} : undefined,
 			toolBudget: data.toolBudget,
 			usageBudget: data.usageBudget,
@@ -4184,7 +4187,10 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		},
 	);
 	const modelOverrideFromParent = modelOrigin === "inherited";
-	const launchRuleError = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: agentConfig.name, model: modelOverride ?? (parentModel && `${parentModel.provider}/${parentModel.id}`), warn: (violation) => deps.watchdog?.displayRuleWarning(violation) });
+	const launchRuleModel = data.nativeWorkerDecision
+		? `${data.nativeWorkerDecision.receipt.model}:${data.nativeWorkerDecision.receipt.thinking}`
+		: modelOverride ?? (parentModel && `${parentModel.provider}/${parentModel.id}`);
+	const launchRuleError = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: agentConfig.name, model: launchRuleModel, warn: (violation) => deps.watchdog?.displayRuleWarning(violation) });
 	if (launchRuleError) return toExecutionErrorResult(params, new Error(launchRuleError), data.contextPolicy.contextSummary);
 	let skillOverride: string[] | false | undefined = normalizeSkillInput(params.skill);
 	let readsOverride: string[] | false | undefined = params.reads;
@@ -4363,7 +4369,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				async create(input) {
 					await data.nativeWorkerDecision!.revalidate();
 					if (input.model !== `${data.nativeWorkerDecision!.receipt.model}:${data.nativeWorkerDecision!.receipt.thinking}`) throw new WorkerDecisionAuthorityError("invalid-decision");
-					data.nativeWorkerDecision!.assertCurrent();
+					data.nativeWorkerDecision!.assertAdmissible();
 					if (input.signal?.aborted) throw new WorkerDecisionAuthorityError("cancelled");
 					return childSessionFactory().create(input);
 				},
@@ -7746,7 +7752,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							model: `${pair.model}:${pair.thinking}`, capabilityCeiling: ceiling, agentName: nativeAgent.name,
 							permissionRules: resolvePermissionRules(deps.config.permissions, nativeAgent.permissions), runtimeSnapshotHost: deps.pi,
 						});
-						const launchRule = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: nativeAgent.name, model: pair.model, warn: () => {} });
+						const launchRule = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: nativeAgent.name, model: `${pair.model}:${pair.thinking}`, warn: () => {} });
 						if (launchRule) throw new Error(launchRule);
 					},
 				});

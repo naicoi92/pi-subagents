@@ -348,3 +348,136 @@ for (const async of [false, true]) it(`N05-long-file-${async ? "async" : "foregr
 		} finally { t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
 	});
 });
+
+function writeWatchdogRule(f: ReturnType<typeof fixture>, rule: { allow?: string[]; deny?: string[] }) {
+	const settingsPath = path.join(f.root, ".pi", "settings.json");
+	fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+	fs.writeFileSync(settingsPath, JSON.stringify({ subagents: { watchdog: { rules: { action: "block", roleModels: { [f.agent.name]: rule } } } } }));
+	return settingsPath;
+}
+
+for (const async of [false, true]) for (const mode of ["deny", "allow"] as const) {
+	it(`N08-${async ? "async" : "fg"}-pair-${mode}: watchdog evaluates committed model and thinking`, async (t) => {
+		await withForeground(async (f, mock) => {
+			writeWatchdogRule(f, { [mode]: ["fixture/target:medium"] });
+			let calls = 0; let config: any;
+			const registration = owner(f, { async decide() { calls++; return selected; } });
+			const spawn = t.mock.method(childProcess, "spawn", (_cmd: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+				config = JSON.parse(fs.readFileSync(String(options.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args.at(-1)), "utf8"));
+				throw new Error("intercepted fixture spawn");
+			}); syncBuiltinESMExports();
+			try {
+				const result = await launch(f, async);
+				assert.equal(calls, 1);
+				assert.equal(mock.sessions.length, !async && mode === "allow" ? 1 : 0);
+				assert.equal(spawn.mock.callCount(), async && mode === "allow" ? 1 : 0);
+				if (mode === "deny") assert.equal(result.isError, true);
+				else if (async) { assert.equal(config.steps[0].model, "fixture/target:medium"); assert.equal(config.steps[0].thinking, "medium"); }
+				else { assert.equal(result.isError, undefined); assert.equal(mock.sessions[0]?.launch.model, "fixture/target:medium"); }
+			} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
+		});
+	});
+}
+
+it("N08-late-watchdog: bare-model denial after config write blocks final async spawn", async (t) => {
+	await withForeground(async (f, mock) => {
+		writeWatchdogRule(f, {});
+		const write = fs.writeFileSync; let config: any; let injected = 0; let calls = 0;
+		const registration = owner(f, { async decide() { calls++; return selected; } });
+		const spawn = t.mock.method(childProcess, "spawn", () => { throw new Error("unexpected spawn"); });
+		t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+			write(...args);
+			const content = typeof args[1] === "string" ? args[1] : "";
+			if (content.includes('"runnerProcessInstanceId"') && content.includes('"steps"')) {
+				config = JSON.parse(content); injected++;
+				writeWatchdogRule(f, { deny: ["fixture/target"] });
+			}
+		}); syncBuiltinESMExports();
+		try {
+			const result = await launch(f, true);
+			assert.equal(injected, 1); assert.equal(calls, 1);
+			assert.equal(spawn.mock.callCount(), 0); assert.equal(mock.sessions.length, 0); assert.equal(result.isError, true);
+		} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
+	});
+});
+
+it("N08-late-watchdog-fg: tightening after attempt admission blocks final foreground factory", async (t) => {
+	await withForeground(async (f, mock) => {
+		const settingsPath = writeWatchdogRule(f, {}); const read = fs.readFileSync;
+		let calls = 0; let applied = 0; let injected = 0;
+		const registration = owner(f, { async decide() { calls++; return selected; }, onApplied() { applied++; } });
+		t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+			const value = read(...args);
+			if (String(args[0]) === settingsPath && applied === 1 && !injected && new Error().stack?.includes("validatePair")) {
+				injected++;
+				queueMicrotask(() => writeWatchdogRule(f, { deny: ["fixture/target:medium"] }));
+			}
+			return value;
+		}); syncBuiltinESMExports();
+		try {
+			const result = await launch(f);
+			assert.equal(injected, 1); assert.equal(calls, 1); assert.equal(applied, 1);
+			assert.equal(mock.sessions.length, 0); assert.equal(result.isError, true);
+		} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+	});
+});
+
+for (const control of ["owner", "cancel", "deadline"] as const) {
+	it(`N08-watchdog-final-${control}: final rule loading cannot invalidate authority then spawn`, async (t) => {
+		if (control === "deadline") t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+		await withForeground(async (f, mock) => {
+			const settingsPath = writeWatchdogRule(f, {}); const read = fs.readFileSync; const write = fs.writeFileSync;
+			const cancel = new AbortController(); let config: any; let injected = 0; let calls = 0;
+			const registration = owner(f, { async decide() { calls++; return selected; } });
+			let replacement: ReturnType<typeof owner> | undefined;
+			const spawn = t.mock.method(childProcess, "spawn", () => { throw new Error("unexpected spawn"); });
+			t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
+				write(...args); const content = typeof args[1] === "string" ? args[1] : "";
+				if (content.includes('"runnerProcessInstanceId"') && content.includes('"steps"')) config = JSON.parse(content);
+			});
+			t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+				const value = read(...args);
+				if (config && !injected && String(args[0]) === settingsPath) {
+					injected++;
+					if (control === "owner") { registration.dispose(); replacement = owner(f, { async decide() { throw new Error("replacement cannot assess stale launch"); } }); }
+					if (control === "cancel") cancel.abort();
+					if (control === "deadline") t.mock.timers.setTime(config.deadlineAt);
+				}
+				return value;
+			}); syncBuiltinESMExports();
+			try {
+				const result = await launch(f, true, cancel.signal, { timeoutMs: 2000 });
+				assert.equal(injected, 1); assert.equal(calls, 1); assert.equal(spawn.mock.callCount(), 0); assert.equal(mock.sessions.length, 0); assert.equal(result.isError, true);
+			} finally { registration.dispose(); replacement?.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
+		});
+	});
+}
+
+for (const control of ["owner", "cancel", "deadline"] as const) {
+	it(`N08-watchdog-final-fg-${control}: final rule loading cannot invalidate authority then create`, async (t) => {
+		if (control === "deadline") t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+		await withForeground(async (f, mock) => {
+			const settingsPath = writeWatchdogRule(f, {}); const read = fs.readFileSync;
+			const cancel = new AbortController(); let armed = false; let injected = 0; let calls = 0; let applied = 0; let deadline = 0;
+			const registration = owner(f, { async decide(request) { calls++; deadline = request.control.launchDeadline!; return selected; }, onApplied() { applied++; } });
+			let replacement: ReturnType<typeof owner> | undefined;
+			t.mock.method(fs, "readFileSync", (...args: Parameters<typeof fs.readFileSync>) => {
+				const value = read(...args);
+				if (applied === 1 && !injected && String(args[0]) === settingsPath && new Error().stack?.includes("validatePair")) {
+					if (!armed) queueMicrotask(() => { armed = true; });
+					else {
+						injected++;
+						if (control === "owner") { registration.dispose(); replacement = owner(f, { async decide() { throw new Error("replacement cannot assess stale launch"); } }); }
+						if (control === "cancel") cancel.abort();
+						if (control === "deadline") t.mock.timers.setTime(deadline);
+					}
+				}
+				return value;
+			}); syncBuiltinESMExports();
+			try {
+				const result = await launch(f, false, cancel.signal, { timeoutMs: 2000 });
+				assert.equal(injected, 1); assert.equal(calls, 1); assert.equal(applied, 1); assert.equal(mock.sessions.length, 0); assert.equal(result.isError, true);
+			} finally { registration.dispose(); replacement?.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+		});
+	});
+}

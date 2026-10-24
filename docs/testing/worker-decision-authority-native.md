@@ -38,3 +38,23 @@ Never-owned checks prove bindings and unchanged deadline-origin code path, not a
 Identity compatibility delta approved before tests: keep file-first `resolveCurrentSessionId`, never UUID-first/hash/truncate/dual lookup. `N05-file-owner` routes a valid file key whose UUID differs. `N05-long-file-foreground`, `N05-long-file-async`, `N11-long-file-start` preserve never-owned legacy paths only for an actual file key above the public 256 UTF-8-byte registration cap with no expected generation. `N11-long-file-owned` rejects an explicit expected generation; malformed IDs and missing/disposed/stale owners stay fail-closed. No authority support is claimed for overlength file identities; public validation is unchanged.
 
 NAT-10 scope checkpoint: `N10-recovery-native` proves ordinary foreground internal compaction/abort recovery under existing gates, not management `resume`/`revive` or detached recovery. Those origin management branches execute before fresh single-launch authority preparation and remain unchanged/pending; no new block or universal authority/recovery coverage is claimed. Follow-on must audit their consumption/owner admission before integrated release.
+
+## NAT-08 admission correction — matrix before regression tests
+
+Review base: `824cbc00dfa6db09b777ab03be42f77293d086d2`; independent review found two P1 gaps. Correction only changes owned native watchdog admission; public APIs, watchdog glob/base-model semantics, never-owned behavior, management recovery and deferred scope remain unchanged.
+
+| Test ID | Actual executor seam | Independent expected result |
+| --- | --- | --- |
+| N08-fg-pair-deny | Foreground selected `fixture/target:medium`; exact-pair block rule | One owner callback; zero child creation |
+| N08-fg-pair-allow | Foreground selected pair; allow only exact pair | One owner callback; factory receives exact pair |
+| N08-async-pair-deny | Direct async selected pair; exact-pair block rule | One owner callback; zero spawn |
+| N08-async-pair-allow | Direct async selected pair; allow only exact pair | One owner callback; intercepted spawn config has exact pair |
+| N08-late-watchdog | Inject bare-target deny after runner config write | One owner callback; live final synchronous rule recheck blocks spawn |
+| N08-late-watchdog-fg | Tighten rules at foreground factory revalidation boundary | One owner callback; live final synchronous rule recheck blocks creation |
+| N08-watchdog-final-owner / cancel / deadline | Invalidate authority while final watchdog rules load/evaluate | After external callback/load, primitive owner/generation/cancel/deadline guards block creation/spawn |
+
+Tests use temporary fixture project settings only. No real user watchdog settings are edited. Original five regression cases must fail behaviorally before source changes; additional final-fence cases extend NAT-08 only. Initial rule hashing alone is insufficient: final actual create/spawn must observe live rules, then fence authority after external work without another host callback after the final primitive guard.
+
+Final-guard expansion before fixtures: `N08-watchdog-final-fg-owner`, `N08-watchdog-final-fg-cancel`, `N08-watchdog-final-fg-deadline` invalidate control during the foreground final synchronous watchdog load after attempt revalidation. Same expected zero creation and one owner callback; shared final admission must guard both native boundaries, not only async.
+
+Correction validation: original five actual-executor regressions fail 0/5 on review base (deny create/spawn `1 !== 0`, allow `0 !== 1`, late deny spawn `1 !== 0`). Final correction fixtures pass 12/12, covering exact pair, late FG/async tightening and owner/generation/cancel/deadline invalidation during final policy loading. Focused union passes 307/307 = prior parent 293 cases + 12 new correction cases + 2 unchanged watchdog-rule neighbors; overlapping earlier runs are not additive. No provider/native CLI evidence is claimed.
