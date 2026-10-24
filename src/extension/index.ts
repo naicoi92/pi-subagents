@@ -13,6 +13,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { invalidateWorkerDecisionAuthority } from "../shared/worker-decision-authority.ts";
+import { readNativeWorkerAuthorityRouting } from "../shared/native-worker-authority-routing.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -543,8 +545,17 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	};
 
+	// Capture primitive pairs at session start/admission, never a cleanup-time current-owner lookup.
+	// Registrants retain their disposer for late registrations this runtime never observes.
+	const workerDecisionOwners = new Map<string, string>();
+	const invalidateWorkerDecisionOwners = () => {
+		const captured = [...workerDecisionOwners];
+		workerDecisionOwners.clear();
+		for (const [sessionId, generation] of captured) invalidateWorkerDecisionAuthority(sessionId, generation);
+	};
 	const executorDeps: SubagentExecutorDeps = {
 		pi,
+		trackWorkerDecisionAuthority: (sessionId, generation) => { workerDecisionOwners.set(sessionId, generation); },
 		parentWake,
 		state,
 		config,
@@ -984,6 +995,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		cleanup(shutdownReason) {
 			if (runtimeCleaned) return;
 			runtimeCleaned = true;
+			invalidateWorkerDecisionOwners();
 			programStatus.dispose(shutdownReason);
 			releaseHostSessionLiveness();
 			releaseHostSessionLiveness = () => {};
@@ -1147,6 +1159,9 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parentWake.bindSession(ctx);
 		completionNotifier.bindSession(ctx.sessionManager);
 		installRuntime(ctx);
+		invalidateWorkerDecisionOwners();
+		const { sessionId: decisionSessionId, routing: decisionOwner } = readNativeWorkerAuthorityRouting(ctx.sessionManager);
+		if (decisionOwner.kind === "active") workerDecisionOwners.set(decisionSessionId, decisionOwner.generation);
 		startSessionMaintenance();
 		scheduleModulePreload();
 		const recovering = event.reason === "startup" || event.reason === "reload" || event.reason === "resume";

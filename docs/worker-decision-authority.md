@@ -1,6 +1,6 @@
 # Worker decision authority API core
 
-`pi-subagents/worker-decision-authority` exports a trusted, in-process session-owner registry and asynchronous leaf-decision preparation. **Native executors do not call this API yet.** Registration alone does not intercept any launch. Foreground/background, deferred/workflow/fork/nested transport and native proof are separate integration work.
+`pi-subagents/worker-decision-authority` exports a trusted, in-process session-owner registry and asynchronous leaf-decision preparation. Originating native foreground and direct async single launches call shared preparation before final model/thinking binding when that host session has owned authority. Deferred background chain/fanout and nested authority transport, durable recovery, Jev policy and actual native/provider proof remain separate work.
 
 ## Ownership and outcomes
 
@@ -13,15 +13,17 @@
 - `missing`: previously registered session has no current owner.
 - `disposed`: terminal session tombstone.
 
-Use the actual originating host session identity consistently for registration and lookup. The native executor's existing identity convention prefers the public session file over session UUID; native routing is not wired yet. Capture a generation once for a logical leaf, not again after awaits to adopt a replacement. Snapshot reads of absent sessions allocate no retained session records and do not consume admission slots.
+Use the actual originating host session identity consistently for registration and lookup. The native executor's existing identity convention prefers the public session file over session UUID through `resolveCurrentSessionId`; registrants must use that same identity, not independently choose a UUID. Capture a generation once for a logical leaf, not again after awaits to adopt a replacement. Snapshot reads of absent sessions allocate no retained session records and do not consume admission slots.
 
-`invalidateWorkerDecisionAuthority(sessionId, generation)` is nonterminal, generation-checked invalidation. It returns `true` only when it removes that matching owner and aborts its pending work; absent, missing, terminal or stale-generation cases return `false` without allocation. Same-session registration can then succeed with a new generation. Consumed identities and committed pairs remain intact; stale invalidation and old registration disposal cannot remove a replacement. It does not authorize another assessment of blocked or indeterminate work. Later lifecycle integration must capture session ID plus generation, not a stale extension context.
+Native compatibility reader preserves legacy never-owned behavior for an actual session-file key above the public 256 UTF-8-byte cap only when no expected generation/ownership carrier exists and the key is otherwise valid. Such an exact key cannot be publicly registered; no authority support is claimed for it. Explicit ownership, malformed IDs, and missing/disposed/stale owners remain fail-closed. Public validation stays strict; no UUID fallback, hashing, truncation or dual lookup is used.
+
+`invalidateWorkerDecisionAuthority(sessionId, generation)` is nonterminal, generation-checked invalidation. It returns `true` only when it removes that matching owner and aborts its pending work; absent, missing, terminal or stale-generation cases return `false` without allocation. Same-session registration can then succeed with a new generation. Consumed identities and committed pairs remain intact; stale invalidation and old registration disposal cannot remove a replacement. It does not authorize another assessment of blocked or indeterminate work. Native lifecycle wiring captures session ID plus generation, never a stale extension context or cleanup-time lookup of the current owner.
 
 `disposeWorkerDecisionSession(sessionId)` terminates that session identity and aborts outstanding work. Registration cannot revive it. Session IDs must identify distinct originating sessions; do not reuse them after termination.
 
 `prepareWorkerDecision(input)` returns one of:
 
-- `unowned`: this session has never registered an owner and the request did not name an expected generation. Later integration must preserve existing launch behavior on this optional path, not attribute a Jev selection.
+- `unowned`: this session has never registered an owner and the request did not name an expected generation. Native integration preserves existing launch behavior on this optional path and does not attribute a Jev selection.
 - `blocked` with a safe typed `reason`: missing expected owner, stale generation, disposed session, cancellation/deadline, invalid reply, denied admission, capacity-exceeded admission or consumed-indeterminate assessment. A previously owned session does not silently become unowned after disposal.
 - `committed` with immutable `receipt`: exact pair passed trusted validation and was logically committed. This is not a spawn, lease, provider execution or terminal receipt.
 
@@ -61,11 +63,25 @@ Assessment cutoff is `min(admission + min(owner.assessmentTimeoutMs, input.class
 
 An injectable `WorkerDecisionClock` (`now`, absolute-deadline `schedule`) permits deterministic fixtures. Production defaults use host time and timers. Resolution and validation consume remaining budget; neither resets it. No new positive minimum validation-time threshold is invented: completion must occur strictly before the hard deadline.
 
+## Originating native launch integration
+
+The executor captures the host session/generation at admission, then resolves the actual configured/runtime-only agent and prepares the complete authored task plus factual role description. It does not rediscover a disk agent through preflight or send configured thinking as assessment facts. Previously owned missing/disposed/stale authority blocks instead of becoming unowned.
+
+Owned launches require the existing resolved finite positive host timeout. An absolute launch deadline is anchored immediately before preparation and threaded unchanged into foreground execution and direct-async config/recovery descriptor. Preparation does not invent a host budget or borrow owner lifetime. Owner lifetime independently tightens the hard authority deadline; registration assessment budget and the 500 ms reserve remain separate. Never-owned launches keep the preexisting timeout origin and avoid asynchronous authority preparation.
+
+The host adapter uses public available-model metadata and actual agent/constraint snapshots. Nonreasoning targets explicitly support `off`; otherwise only explicitly reported `thinkingLevelMap` entries count as verified support. Generic SDK support fallback is not evidence. A suffix/config value establishes requested effort, not necessarily effective support: original/final-target baselines are verified only when the exact effort is supported on that physical model. Unknown/default/unsupported effort stays `thinking-unresolved`; no implicit baseline clamp or guessed SDK default is supplied. A successful explicit supported owner choice may still apply with an unresolved original baseline; verified fallback may not use it.
+
+Configured agent models remain selectable, not implicit fixed-role contracts. Current explicit scope, ceiling, availability, required-extension, tool/budget/capability and launch-rule admission are checked again on reuse. The committed pair is bound as an explicit model **and explicit thinking override**. A model suffix by itself is not this guarantee: explicit thinking override replaces a preexisting suffix and prevents role-configured `high` from winning over authority-selected `medium`. Foreground factory and direct-async spawn fences reject stale authority or a mismatched final pair. Authority receipt digest and native launch-contract digest project different data; compare their selected model/effort, not hash equality.
+
+Lifecycle owns only generations observed at `session_start` or executor admission. Switch/reload/shutdown nonterminally invalidates those captured pairs, preserving consumed identities and permitting same-session registration. Old cleanup cannot remove an uncaptured replacement, including one registered by an abort listener. **Registrant owns its returned disposer**, including registration later in the same startup event without any launch; executor does not claim to clean every registration. Later Jev integration must retain that disposer for its own lifecycle.
+
+Preparation happens outside foreground compaction-recovery attempts. Each separately permitted attempt revalidates the same logical commitment with a distinct runtime-attempt identity and no second assessment/notification. Existing termination, stop, timeout and lease rules still decide whether another attempt is permitted. Detached runner children receive the committed pair and deadline, not a serialized callback or new authority transport. A receipt proves logical commitment only, never spawn/provider execution or crash-durable exactly-once behavior. Existing management `resume`/`revive` branches execute before fresh single-launch preparation and remain unchanged; authority admission/consumption for those paths and detached recovery is pending follow-on review before integrated release. This slice is not universal authority or recovery coverage.
+
 ## Consumption, recovery and notification
 
 Claim occurs synchronously before `decide`, including reentrant callbacks. One assessment is consumed per stable logical launch ID, not per runtime attempt. Pending duplicate deliveries join the first result; a duplicate's cancellation/deadline only stops its own wait. Original request cancellation blocks the shared decision. Changed task/context/policy revisions produce `identity-conflict`, never a new assessment under the same logical ID. Owner succession preserves consumption. Binding uses validated named-field projections for facts and nested policy records: record key insertion order and undeclared extra fields do not change identity, while actual declared values and meaningful array order do. Malformed declared fields are invalid-request, not silently coerced.
 
-Committed duplicate delivery revalidates the same pair under current authority and returns the same receipt without reassessment or another notification. This allows a later native integration to reuse selection for a separately authorized runtime attempt; **it does not authorize spawning or bypass termination/lease checks**. The committed receipt retains its original deciding generation.
+Committed duplicate delivery revalidates the same pair under current authority and returns the same receipt without reassessment or another notification. Native integration reuses selection for a separately authorized runtime attempt; **it does not authorize spawning or bypass termination/lease checks**. The committed receipt retains its original deciding generation.
 
 Callback exceptions leave `consumed-indeterminate`, not an implicit retry or executor-selected baseline. Typed rejection/deadline/cancellation remains consumed. `onApplied` runs after validation and logical commitment, at most once. If it throws, commitment stays valid and result includes `notification: "failed"`; no raw error is returned. There is no observer retry/outbox guarantee.
 
@@ -90,4 +106,4 @@ There is no LRU eviction, reset API or automatic retry that forgets consumed wor
 
 A follow-on durable integration must persist claim before inference and block indeterminate crash recovery, rather than reconstruct a missing claim as unconsumed. It must separately prove child identity/termination around ambiguous spawn.
 
-See [API-core acceptance matrix](testing/worker-decision-authority-core.md) and [routing-delta acceptance matrix](testing/worker-decision-authority-routing.md) for contract tests and deferred proof boundaries. This routing delta adds no foreground/background launch hook, deadline anchoring, lifecycle event wiring or detached transport.
+See [API-core acceptance matrix](testing/worker-decision-authority-core.md), [routing-delta acceptance matrix](testing/worker-decision-authority-routing.md) and [native wiring matrix](testing/worker-decision-authority-native.md) for scoped tests and deferred proof boundaries.

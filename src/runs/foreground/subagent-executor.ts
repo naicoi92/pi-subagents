@@ -1,4 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { WorkerDecisionAuthorityError, type WorkerDecisionAuthoritySnapshot } from "../../shared/worker-decision-authority.ts";
+import { prepareNativeWorkerDecision, type NativeWorkerDecision } from "../shared/native-worker-decision.ts";
+import { childSessionFactory } from "../shared/child-session.ts";
+import { applyThinkingSuffix, resolvePiLaunchToolPlan } from "../shared/child-tool-plan.ts";
+import { intersectThinkingCeilings } from "../../shared/thinking-ceiling.ts";
+import { resolvePermissionRules } from "../shared/permissions.ts";
+import { resolveSkillsWithFallback } from "../../agents/skills.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
@@ -60,6 +67,7 @@ import { acceptanceHasTypedVerify, normalizeGateAcceptance, resolveAcceptanceRep
 import { canPreferFork, createForkContextResolver, resolveSubagentLaunchContext } from "../../shared/fork-context.ts";
 import { createPrunedForkSessionWriter } from "../../shared/pruned-fork.ts";
 import { resolveCurrentSessionId } from "../../shared/session-identity.ts";
+import { readNativeWorkerAuthorityRouting } from "../../shared/native-worker-authority-routing.ts";
 import { currentCompletionOwnerId } from "../../shared/completion-owner.ts";
 import { SUBAGENT_ASYNC_COMPLETE_EVENT } from "../../shared/types.ts";
 import { applyIntercomBridgeToAgent, INTERCOM_BRIDGE_MARKER, resolveIntercomBridge, resolveIntercomSessionTarget, resolveSubagentIntercomTarget, type IntercomBridgeState } from "../../intercom/intercom-bridge.ts";
@@ -462,6 +470,7 @@ interface ExecutorDeps {
 	kill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
 	/** Set when this executor runs inside a child session; carries the runtime settings the host passes instead of environment variables. */
 	childRuntime?: ChildRuntimeConfig;
+	trackWorkerDecisionAuthority?: (sessionId: string, generation: string) => void;
 }
 
 function inheritedNestedRoute(deps: Pick<ExecutorDeps, "childRuntime">): NestedRoute | undefined {
@@ -533,6 +542,7 @@ interface ExecutionContextData {
 	topLevelAsyncCapacityEligible: boolean;
 	activeAsyncCapacity?: ActiveAsyncCapacityHandle;
 	workflowChildPermitLaunch?: WorkflowChildPermitContext;
+	nativeWorkerDecision?: NativeWorkerDecision;
 }
 
 function resolveRequestedCwd(runtimeCwd: string, requestedCwd: string | undefined): string {
@@ -3632,6 +3642,7 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 		const modelOverrideFromParent = modelOrigin === "inherited";
 		const launchRuleError = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: a.name, model: modelOverride ?? (parentModel && `${parentModel.provider}/${parentModel.id}`), warn: (violation) => deps.watchdog?.displayRuleWarning(violation) });
 		if (launchRuleError) return toExecutionErrorResult(params, new Error(launchRuleError), data.contextPolicy.contextSummary);
+		if (data.nativeWorkerDecision) await data.nativeWorkerDecision.revalidate();
 		const asyncResult = await executeAsyncSingle(id, compactOptional<Parameters<typeof executeAsyncSingle>[1]>({
 			toolCallId: data.toolCallId,
 			agent: params.agent!,
@@ -3686,6 +3697,12 @@ async function runAsyncPath(data: ExecutionContextData, deps: ExecutorDeps): Pro
 			extensionBindings: params.extensionBindings,
 			acceptance: params.acceptance,
 			timeoutMs: data.timeoutMs,
+			absoluteDeadlineAt: data.nativeWorkerDecision?.deadlineAt,
+			beforeNativeSpawn: data.nativeWorkerDecision ? (model, thinking) => {
+				const decision = data.nativeWorkerDecision!;
+				if (model !== `${decision.receipt.model}:${decision.receipt.thinking}` || thinking !== decision.receipt.thinking) throw new WorkerDecisionAuthorityError("invalid-decision");
+				decision.assertCurrent();
+			} : undefined,
 			toolBudget: data.toolBudget,
 			usageBudget: data.usageBudget,
 			configToolBudget: data.configToolBudget,
@@ -4342,6 +4359,16 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		const childSessionFile = sessionFileForTask(params.agent!, 0, modelOverride, modelOverrideFromParent, modelOrigin);
 		const launched = await runSync(ctx.cwd, agents, params.agent!, task, compactOptional<Parameters<typeof runSync>[4]>({
 			machine: foregroundMachine,
+			childSessionFactory: data.nativeWorkerDecision ? {
+				async create(input) {
+					await data.nativeWorkerDecision!.revalidate();
+					if (input.model !== `${data.nativeWorkerDecision!.receipt.model}:${data.nativeWorkerDecision!.receipt.thinking}`) throw new WorkerDecisionAuthorityError("invalid-decision");
+					data.nativeWorkerDecision!.assertCurrent();
+					if (input.signal?.aborted) throw new WorkerDecisionAuthorityError("cancelled");
+					return childSessionFactory().create(input);
+				},
+				dispose: () => childSessionFactory().dispose(),
+			} : undefined,
 			parentProviderRegistry: ctx.modelRegistry,
 			projectTrusted: sessionProjectTrust(ctx),
 			remoteReads: foregroundMachine ? readsOverride : undefined,
@@ -5412,7 +5439,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const workflowLaunchObserver = workflowLaunchObservers.get(params);
 		const inheritedUsageBudget = workflowOwnedUsageBudgets.get(params);
 		const retainedRequiredExtensions = workflowRetainedRequiredExtensions.get(params);
-		const delegatedThinkingOverride = delegatedThinkingOverrides.get(params);
+		let delegatedThinkingOverride = delegatedThinkingOverrides.get(params);
 		const allowZeroToolBudget = delegatedZeroToolBudgets.has(params);
 		const delegatedExecution = delegatedExecutions.has(params);
 		const publicExecution = publicExecutions.has(params);
@@ -6775,9 +6802,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		let requestSessionId = "";
 		let requestPiSessionId: string | undefined;
 		let requestParentModel: ParentModel | undefined;
+		let workerDecisionRouting: WorkerDecisionAuthoritySnapshot = { kind: "never-owned" };
 		try {
-			requestSessionId = resolveCurrentSessionId(ctx.sessionManager);
+			({ sessionId: requestSessionId, routing: workerDecisionRouting } = readNativeWorkerAuthorityRouting(ctx.sessionManager));
 			requestPiSessionId = ctx.sessionManager.getSessionId() ?? undefined;
+			if (workerDecisionRouting.kind === "active") deps.trackWorkerDecisionAuthority?.(requestSessionId, workerDecisionRouting.generation);
 			requestParentModel = parentModelOverride !== undefined
 				? parentModelOverride ?? undefined
 				: preserveActiveSession
@@ -7666,6 +7695,65 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		const asyncRunId = requestedWorkflowChildAsyncId && path.basename(requestedWorkflowChildAsyncId) === requestedWorkflowChildAsyncId
 			? requestedWorkflowChildAsyncId
 			: randomUUID();
+		let nativeWorkerDecision: NativeWorkerDecision | undefined;
+		const nativeAgent = hasSingle ? agents.find((agent) => agent.name === effectiveParams.agent) : undefined;
+		if (nativeAgent && (!nativeAgent.runner || nativeAgent.runner.type === "pi") && workerDecisionRouting.kind !== "never-owned") {
+			try {
+				const originalModel = resolveEffectiveSubagentModel(effectiveParams.model, nativeAgent.model, requestParentModel, ctx.modelRegistry.getAvailable().map(toModelInfo), nativeAgent.modelProvider ?? requestParentModel?.provider, {
+					scope: resolveModelScopesForAgent(modelScope, nativeAgent.name, requestParentModel, scopedModelIdsFromContext(ctx)),
+					source: resolveModelOrigin({ explicitModel: effectiveParams.model, agentModel: nativeAgent.model, parentModel: requestParentModel }) === "explicit" ? "explicit" : "inherited",
+				});
+				const originalThinking = delegatedThinkingOverride ?? nativeAgent.thinking;
+				const originalWithThinking = applyThinkingSuffix(originalModel, originalThinking, delegatedThinkingOverride !== undefined);
+				nativeWorkerDecision = await prepareNativeWorkerDecision({
+					sessionId: requestSessionId, routing: workerDecisionRouting,
+					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
+					agent: nativeAgent, task: effectiveParams.task ?? "", context: contextPolicy.contextForAgent(nativeAgent.name),
+					originalModel: originalWithThinking, originalThinking,
+					originalProvenance: effectiveParams.model !== undefined || delegatedThinkingOverride !== undefined ? "explicit-launch" : "host-effective",
+					timeoutMs: foregroundTimeout.timeoutMs, signal,
+					getConstraints() {
+						return {
+							availableModels: ctx.modelRegistry.getAvailable().map(toModelInfo),
+							modelScopes: resolveModelScopesForAgent(modelScope, nativeAgent.name, requestParentModel, scopedModelIdsFromContext(ctx)),
+							thinkingCeiling: intersectThinkingCeilings(nativeAgent.maxThinking, deps.childRuntime?.thinkingCeiling),
+							admission: {
+								capabilityCeiling: launchCapabilityCeiling(),
+								requiredExtensions: mergeRequiredChildExtensions(nativeAgent.requiredExtensions, retainedRequiredExtensions, deps.childRuntime?.requiredExtensions, resolveRequiredChildExtensions(requestPiSessionId), resolveRequiredChildExtensions(requestSessionId)),
+								toolBudget: effectiveParams.toolBudget ?? nativeAgent.toolBudget ?? deps.config.toolBudget,
+								usageBudget: effectiveParams.usageBudget ?? deps.config.usageBudget,
+								permissions: deps.config.permissions,
+							},
+						};
+					},
+					admit(pair) {
+						const ceiling = launchCapabilityCeiling();
+						assertAgentAllowedByCapabilityCeiling(nativeAgent.name, ceiling);
+						const requiredExtensions = mergeRequiredChildExtensions(nativeAgent.requiredExtensions, retainedRequiredExtensions, deps.childRuntime?.requiredExtensions, resolveRequiredChildExtensions(requestPiSessionId), resolveRequiredChildExtensions(requestSessionId));
+						assertRequiredChildExtensionsAdmitted([requiredExtensions], { agent: nativeAgent.name, runnerType: nativeAgent.runner?.type, machine: effectiveParams.machine ?? nativeAgent.machine });
+						const budget = validateToolBudgetConfig(effectiveParams.toolBudget ?? nativeAgent.toolBudget ?? deps.config.toolBudget, "toolBudget", allowZeroToolBudget ? { minimumHard: 0 } : undefined);
+						if (budget.error) throw new Error(budget.error);
+						const usage = validateUsageBudgetConfig(effectiveParams.usageBudget ?? deps.config.usageBudget, "usageBudget");
+						if (usage.error) throw new Error(usage.error);
+						const skills = normalizeSkillInput(effectiveParams.skill);
+						const resolvedSkills = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
+						if (resolvedSkills.missing.includes("pi-subagents")) throw new Error("Skills not found: pi-subagents");
+						resolvePiLaunchToolPlan({
+							tools: nativeAgent.tools, excludeTools: nativeAgent.excludeTools, allowNestedSubagents: nativeAgent.allowNestedSubagents,
+							extensions: nativeAgent.extensions, subagentOnlyExtensions: nativeAgent.subagentOnlyExtensions, requiredExtensions,
+							mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolvedSkills.resolved.length > 0,
+							structuredOutput: Boolean(effectiveParams.outputSchema), fast: effectiveParams.fast ?? nativeAgent.fast,
+							model: `${pair.model}:${pair.thinking}`, capabilityCeiling: ceiling, agentName: nativeAgent.name,
+							permissionRules: resolvePermissionRules(deps.config.permissions, nativeAgent.permissions), runtimeSnapshotHost: deps.pi,
+						});
+						const launchRule = applyWatchdogLaunchRules({ cwd: effectiveCwd, agent: nativeAgent.name, model: pair.model, warn: () => {} });
+						if (launchRule) throw new Error(launchRule);
+					},
+				});
+				effectiveParams = { ...effectiveParams, model: nativeWorkerDecision.receipt.model, modelOrigin: "explicit" };
+				delegatedThinkingOverride = nativeWorkerDecision.receipt.thinking;
+			} catch (error) { return toExecutionErrorResult(effectiveParams, error, contextPolicy.contextSummary); }
+		}
 		const topLevelAsyncCapacityEligible = depth === 0 && !inheritedNestedRouteValue && !effectiveParams.workflowParentRunId;
 		const topLevelAsync = effectiveAsync && topLevelAsyncCapacityEligible;
 		let activeAsyncCapacity: ActiveAsyncCapacityHandle | undefined;
@@ -7858,6 +7946,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			intercomBridge,
 			nestedRoute,
 			timeoutMs: foregroundTimeout.timeoutMs,
+			deadlineAt: nativeWorkerDecision?.deadlineAt,
+			nativeWorkerDecision,
 			toolBudget: runToolBudget.toolBudget,
 			usageBudget: usageBudget.budget,
 			inheritedUsageBudget,

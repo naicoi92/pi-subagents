@@ -262,6 +262,8 @@ interface AsyncChainParams {
 interface AsyncSingleParams {
 	/** Originating executor invocation, distinct from the async run id. */
 	toolCallId?: string;
+	/** Origin-host pair/freshness fence immediately before detached spawn; never serialized. */
+	beforeNativeSpawn?: (model: string | undefined, thinking: string | undefined) => void;
 	agent: string;
 	task?: string;
 	/** Raw caller-facing goal used only by the started event. */
@@ -663,7 +665,7 @@ export function emitProcessTerminalEvent(ctx: AsyncExecutionContext, proof: unkn
 	}
 }
 
-function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Omit<AsyncStatus, "pid" | "processTerminal">, initialStatusPath: string, launchParentSessionId: string | undefined, onProcessTerminal?: (proof: unknown) => void, onBeforeProceed?: (runnerProcessInstanceId: string) => void, requestedCwd = cwd): SpawnRunnerResult | Promise<SpawnRunnerResult> {
+function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Omit<AsyncStatus, "pid" | "processTerminal">, initialStatusPath: string, launchParentSessionId: string | undefined, onProcessTerminal?: (proof: unknown) => void, onBeforeProceed?: (runnerProcessInstanceId: string) => void, requestedCwd = cwd, beforeSpawn?: () => void): SpawnRunnerResult | Promise<SpawnRunnerResult> {
 	const cwdError = preflightLaunchCwd(requestedCwd, cwd);
 	if (cwdError) return { error: cwdError };
 	if (launchParentSessionId !== undefined && (!launchParentSessionId || launchParentSessionId.trim() !== launchParentSessionId)) {
@@ -778,6 +780,7 @@ function spawnRunner(cfg: object, suffix: string, cwd: string, initialStatus: Om
 		if (launchParentSessionId === undefined) delete runnerEnv[SUBAGENT_PARENT_SESSION_ENV];
 		else runnerEnv[SUBAGENT_PARENT_SESSION_ENV] = launchParentSessionId;
 		const [spawnCommand, ...spawnArgs] = launcher ? [...launcher.argv, command, ...args] : [command, ...args];
+		beforeSpawn?.();
 		const proc = spawn(spawnCommand!, spawnArgs, {
 			cwd,
 			...backgroundProcessOptions(),
@@ -2328,6 +2331,7 @@ export function executeAsyncSingle(
 			(proof) => emitProcessTerminalEvent(ctx, proof),
 			(runnerProcessInstanceId) => params.activeAsyncCapacity?.markStarted(runnerProcessInstanceId),
 			params.requestedCwd ?? runnerCwd,
+			params.beforeNativeSpawn ? () => params.beforeNativeSpawn!(selectedModel, launchThinking) : undefined,
 		);
 	} catch (error) {
 		params.activeAsyncCapacity?.rollback();
