@@ -1,3 +1,5 @@
+import { registerWorkerPresentation } from "../../src/api/worker-presentation.ts";
+import { issueWorkerPresentationBinding, isWorkerPresentationDelegated } from "../../src/shared/worker-presentation.ts";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -134,4 +136,18 @@ it("N11-long-file-start: overlength never-owned file identity keeps session star
 	const r = runtime(ctx);
 	try { await r.start(); }
 	finally { await r.shutdown(); }
+});
+
+for (const reason of ["reload", "resume", "new"]) it(`PRESENTATION-lifecycle-${reason}: actual runtime invalidates observed late registration and old disposer cannot remove successor`, async () => {
+	const ctx = context(), r = runtime(ctx); await r.start();
+	const owner = registerWorkerPresentation({ sessionId: ctx.sessionId });
+	const event = Object.freeze({ version: 1 as const, sessionId: ctx.sessionId, runId: "leaf", toolCallId: "tool", logicalLaunchId: "logical", receipt: Object.freeze({ logicalLaunchId: "logical", ownerGeneration: "authority", digest: "digest", model: "fixture/target", thinking: "medium" as const, reason: "assessed" as const, definitionRevision: "d", constraintRevision: "c" }) });
+	issueWorkerPresentationBinding(event); assert.equal(owner.acknowledge(event), true);
+	try {
+		if (reason === "reload") await r.shutdown(); else await r.start(reason);
+		assert.equal(isWorkerPresentationDelegated(ctx.sessionId, "leaf"), false);
+		const replacement = registerWorkerPresentation({ sessionId: ctx.sessionId });
+		try { owner.dispose(); assert.equal(replacement.acknowledge(event), false); }
+		finally { replacement.dispose(); }
+	} finally { owner.dispose(); await r.shutdown(); }
 });

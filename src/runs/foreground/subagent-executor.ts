@@ -1,3 +1,5 @@
+import type { SubagentAttachedForegroundCompleteEvent } from "../../shared/types.ts";
+import { issueWorkerPresentationBinding } from "../../shared/worker-presentation.ts";
 import { randomUUID } from "node:crypto";
 import { SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT, WorkerDecisionAuthorityError, type SubagentWorkerDecisionAcceptedEvent, type WorkerDecisionAuthoritySnapshot } from "../../shared/worker-decision-authority.ts";
 import { prepareNativeWorkerDecision, type NativeWorkerDecision } from "../shared/native-worker-decision.ts";
@@ -4644,7 +4646,7 @@ function duplicateSubagentCallResult(params: SubagentParamsLike): AgentToolResul
 }
 
 const workflowOriginToolCallIds = new WeakMap<object, string>();
-const workflowLaunchObservers = new WeakMap<object, (launch: { agent: string; sessionName?: string; sessionFile?: string; async: boolean; runId?: string; workerDecisionAccepted?: boolean }) => void>();
+const workflowLaunchObservers = new WeakMap<object, (launch: { agent: string; sessionName?: string; sessionFile?: string; async: boolean; runId?: string; workerDecisionAccepted?: boolean; workerDecisionSessionId?: string }) => void>();
 const workflowOwnedUsageBudgets = new WeakMap<object, UsageBudgetConfig>();
 const workflowRetainedRequiredExtensions = new WeakMap<object, RequiredChildExtensionSnapshot>();
 
@@ -6591,7 +6593,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const workflowHostSteps = new Map<string, HostStepNode>();
 			let liveWorkflow: NonNullable<Details["workflow"]> = { trace: [], emits: [], console: [], ...(workflowResource ? { resource: workflowResource.provenance } : {}) };
 			const childProgress = new Map<string, ReturnType<typeof workflowChildProgress>>();
-			const childLaunches = new Map<string, { agent: string; runId?: string }>();
+			const childLaunches = new Map<string, { agent: string; runId?: string; async?: boolean; workerDecisionAccepted?: boolean; workerDecisionSessionId?: string }>();
 			let activityTimer: ReturnType<typeof setTimeout> | undefined;
 			let lastProgressAt = 0;
 			let workflowProgressClosed = false;
@@ -6682,7 +6684,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							}
 							workflowOriginToolCallIds.set(childRequest, originToolCallId);
 							workflowLaunchObservers.set(childRequest, (launch) => {
-								childLaunches.set(key, { agent: launch.agent, ...(launch.runId ? { runId: launch.runId } : {}) });
+								childLaunches.set(key, { ...launch });
 								// Telemetry must not decide the child's outcome, as with onTrace in scripted-workflow.
 								try {
 									sendWorkflowProgress();
@@ -6789,6 +6791,26 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					fullResultPath: workflowFullResultPath,
 					producedChildOutputPaths,
 				});
+				// Canonical public errors throw away Details. Publish only actually settled owned
+				// native leaves, never infer sibling outcomes from the root failure/inventory closure.
+				for (const child of partial.children) {
+					const launch = childLaunches.get(child.key);
+					if (!launch?.workerDecisionAccepted || launch.async !== false || !launch.workerDecisionSessionId || !launch.runId
+						|| child.runId !== launch.runId || child.state === "running" || child.detached) continue;
+					const settled = workflowChildSummary({ parentToolCallId: originToolCallId, workflowRunId: foregroundWorkflowRunId, workflowState: "failed", inventoryComplete: false, children: [child] }).children[0];
+					if (!settled || settled.state === "pending" || settled.state === "running" || settled.state === "detached") continue;
+					const event: SubagentAttachedForegroundCompleteEvent = Object.freeze({
+						version: 1, attached: true, source: "foreground", mode: "single",
+						sessionId: launch.workerDecisionSessionId, toolCallId: originToolCallId, runId: launch.runId,
+						parentWorkflowRunId: foregroundWorkflowRunId, workflowKey: child.key, agent: launch.agent,
+						state: settled.state === "completed" ? "complete" : settled.state,
+						success: settled.state === "completed",
+						...(child.stopped ? { stopped: true } : {}), ...(child.interrupted ? { interrupted: true } : {}),
+						timestamp: Date.now(),
+					});
+					try { deps.pi.events.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, event); }
+					catch { /* Observers cannot change the workflow error or its canonical tool result. */ }
+				}
 				const workflowChildren = workflowChildSummary({ parentToolCallId: _id, workflowRunId: foregroundWorkflowRunId, workflowState: "failed", inventoryComplete: true, trace: partial.trace, children: partial.children });
 				const terminalOutcome = workflowFailureTerminalOutcome(error, partial.children, usageBudgetState(workflowUsageBudget.budget, sumResultsCost(workflowResults)));
 				const receipt = terminalWorkflowReceipt(foregroundWorkflowRunId, "failed", partial.children, workflowChildren, terminalOutcome, [...workflowHostSteps.values()], workflowResource?.provenance, workflowArgsDigest);
@@ -8166,6 +8188,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					...(effectiveParams.workflowParentRunId ? { parentWorkflowRunId: effectiveParams.workflowParentRunId } : {}),
 					...(effectiveParams.workflowKey ? { workflowKey: effectiveParams.workflowKey } : {}),
 				});
+				issueWorkerPresentationBinding(event);
 				try { deps.pi.events.emit(SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT, event); }
 				catch { /* Observers cannot change launch admission or execution. */ }
 			}
@@ -8183,7 +8206,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						: undefined;
 				if (launch) {
 					workflowLaunchObservers.delete(params);
-					workflowLaunchObserver({ ...launch, ...(nativeWorkerDecision ? { workerDecisionAccepted: true } : {}) });
+					workflowLaunchObserver({ ...launch, ...(nativeWorkerDecision ? { workerDecisionAccepted: true, workerDecisionSessionId: requestSessionId } : {}) });
 				}
 			}
 			const asyncResult = await runAsyncPath(execData, deps);

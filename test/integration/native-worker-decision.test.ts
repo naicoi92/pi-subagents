@@ -1,3 +1,6 @@
+import { finalizeToolResult } from "../../src/extension/tool-result.ts";
+import { registerWorkerPresentation } from "../../src/api/worker-presentation.ts";
+import { isWorkerPresentationDelegated } from "../../src/shared/worker-presentation.ts";
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import fs from "node:fs";
@@ -657,14 +660,16 @@ it("CORRELATION-leaf: immutable consumed receipt maps originating tool/session t
 	await withForeground(async (f, mock) => {
 		let receipt!: AppliedWorkerDecision;
 		let sessionsAtAcceptance = -1;
+		const presentation = registerWorkerPresentation({ sessionId: f.sessionId });
 		const registration = owner(f, { async decide() { return selected; }, onApplied(value) { receipt = value; } });
-		f.observe((channel) => { if (channel === acceptedChannel) sessionsAtAcceptance = mock.sessions.length; });
+		f.observe((channel, event) => { if (channel === acceptedChannel) { sessionsAtAcceptance = mock.sessions.length; assert.equal(presentation.acknowledge(event), true, "executor publishes binding before synchronous emit"); } });
 		try {
 			const result = await f.executor.execute("correlation-tool", { agent: f.agent.name, task: "Private task", async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
 			assert.equal(result.isError, undefined, JSON.stringify(result));
 			assert.equal(accepted(f).length, 1);
 			const event = accepted(f)[0];
 			assert.equal(sessionsAtAcceptance, 0);
+			assert.equal(isWorkerPresentationDelegated(f.sessionId, event.runId), true);
 			assert.equal(event.receipt, receipt);
 			assert.ok(Object.isFrozen(event)); assert.ok(Object.isFrozen(event.receipt));
 			assert.deepEqual(Object.keys(event).sort(), ["version", "sessionId", "toolCallId", "runId", "logicalLaunchId", "receipt"].sort());
@@ -675,7 +680,7 @@ it("CORRELATION-leaf: immutable consumed receipt maps originating tool/session t
 			assert.equal(starts(f).length, 1); assert.equal(starts(f)[0].runId, event.runId);
 			assert.ok(f.events.findIndex((entry) => entry.channel === acceptedChannel) < f.events.findIndex((entry) => entry.channel === childStatusChannel));
 			assert.doesNotMatch(JSON.stringify(event), /Private task|systemPrompt|policyContext|authorization/);
-		} finally { registration.dispose(); }
+		} finally { presentation.dispose(); registration.dispose(); }
 	});
 });
 
@@ -771,4 +776,34 @@ for (const workflow of [false, true]) it(`CORRELATION-runner-${workflow ? "workf
 			assert.equal(terminal.runId, accepted(f)[0].runId); assert.equal(terminal.state, "complete");
 		} finally { mock.uninstall(); }
 	} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
+});
+
+for (const withCompleted of [false, true]) it(`CORRELATION-attached-workflow-failure-${withCompleted}: settled leaves survive canonical public throw without terminating unstarted sibling`, async () => {
+	const f = fixture(); const mock = createMockPi(); mock.install();
+	if (withCompleted) mock.onCall({ output: "completed alpha" });
+	mock.onCall({ exitCode: 1, stderr: "leaf provider failure" });
+	const registration = owner(f, { async decide() { return selected; } });
+	const script = path.join(f.root, "attached-failure.js");
+	fs.writeFileSync(script, `${withCompleted ? `await runs.run("alpha", { agent: "${f.agent.name}", task: "Alpha", async: false, acceptance: false });` : ""}
+await runs.run("beta", { agent: "${f.agent.name}", task: "Beta", async: false, acceptance: false });
+await runs.run("unstarted", { agent: "${f.agent.name}", task: "Never launched", async: false, acceptance: false });`);
+	try {
+		const result = await f.executor.executePublic("attached-workflow-tool", { workflow: script, async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+		assert.equal(result.isError, true);
+		assert.throws(() => finalizeToolResult(result), /leaf provider failure/);
+		const terminal = f.events.filter((event) => event.channel === "subagent:foreground-complete").map((event) => event.payload);
+		assert.equal(terminal.length, withCompleted ? 2 : 1);
+		assert.equal(accepted(f).length, terminal.length);
+		assert.deepEqual(terminal.map((event) => event.state), withCompleted ? ["complete", "failed"] : ["failed"]);
+		assert.equal(new Set(terminal.map((event) => event.runId)).size, terminal.length);
+		for (const event of terminal) {
+			const binding = accepted(f).find((binding) => binding.runId === event.runId);
+			assert.ok(binding); assert.equal(event.sessionId, f.sessionId);
+			assert.equal(event.parentWorkflowRunId, binding.parentWorkflowRunId); assert.equal(event.workflowKey, binding.workflowKey);
+			assert.equal(event.toolCallId, "attached-workflow-tool"); assert.equal(event.attached, true); assert.equal(event.version, 1);
+			assert.equal(event.success, event.state === "complete"); assert.equal(event.id, undefined);
+			assert.equal(event.summary, undefined); assert.equal(event.output, undefined);
+		}
+		assert.ok(!terminal.some((event) => event.workflowKey === "unstarted"));
+	} finally { registration.dispose(); mock.uninstall(); }
 });

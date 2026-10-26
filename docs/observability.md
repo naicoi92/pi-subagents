@@ -345,3 +345,61 @@ Intercom delivery events:
 `src/extension/index.ts` registers the notification handler that consumes `subagent:async-complete`. Control/attention events are surfaced as visible parent notices and persisted for async runs. Native supervisor requests are delivered only to the exact parent session that spawned the child.
 
 `pi.events` is in-process only. It does not reach separate Pi processes or child subagents; use the file lifecycle artifacts or `pi-intercom` for cross-process coordination.
+
+## Opt-in worker presentation ownership
+
+`pi-subagents/worker-presentation` exports:
+
+```ts
+registerWorkerPresentation({ sessionId }): {
+  acknowledge(accepted: SubagentWorkerDecisionAcceptedEvent): boolean;
+  dispose(): void;
+}
+```
+
+Trusted in-process consumers register once per originating session using the
+[file-first session identity](worker-decision-authority.md). Duplicate registration
+throws; failed registration leaves native presentation unchanged. Retain the returned
+disposer and invoke it on switch, shutdown and reload. An old disposer cannot remove
+a replacement owner. Executor lifecycle also invalidates registrations it observes;
+registrants still own cleanup when no executor runtime observes their registration.
+
+After accepting responsibility for a leaf's live summary **and details**, pass the
+**original** `subagent:worker-decision-accepted` event object to `acknowledge`. The
+executor records the binding before emitting, so synchronous acknowledgment works.
+Reconstructed, foreign-session, pre-registration and stale-registration events return
+`false`. Duplicate acknowledgment of the same current binding is idempotent. Registry
+identity is process-shared across dependency copies. This is presentation delegation,
+not launch authority, a heartbeat or hang detection. Never acknowledge work the
+consumer cannot show.
+
+Only acknowledged materialized native single-leaf async-widget and inline Fleet rows
+are suppressed. Unbound siblings, workflow wrappers/planned graph/checklists, nested
+work, explicit fleet inspection, status/RPC data, controls, security, interviews and
+watchdog notices remain native. This is not a terminal-wide compact-workflow guarantee.
+For a live owned completion message, collapsed native rendering has no worker row;
+Pi's standard expansion retains its native body, including failure/cancellation reason
+and output. Existing silent-success `display: false` stays silent, not expandable.
+No model-facing content, tool result, message details or `display` flag is rewritten.
+Serialized history never acquires this transient presentation binding.
+
+Acknowledgment/disposal refreshes native surfaces immediately. Without a consumer,
+or after disposal/reload, native rows return; there is no global renderer override.
+Consumers must clear their own summaries when releasing ownership.
+
+### Attached foreground workflow failure observations
+
+A failed foreground workflow's canonical public tool error cannot retain structured
+`Details`. Before returning that error, the executor emits the existing
+`subagent:foreground-complete` channel for each **actually settled owned native leaf**
+in its partial results, joined to the exact captured launch. The exported
+`SubagentAttachedForegroundCompleteEvent` type (`pi-subagents/shared-types`) has
+`version: 1`, `attached: true`, `source: "foreground"`, `mode: "single"`, originating
+`sessionId`/`toolCallId`, actual leaf `runId`, `parentWorkflowRunId`, `workflowKey`,
+`agent`, `state`, `success`, optional explicit `stopped`/`interrupted`, and `timestamp`.
+`state` is `complete`, `failed`, `stopped`, `paused` or `rejected`. No fabricated
+notification ID, task, output or error body is added. Pending/running/detached or
+unstarted siblings never receive an inferred terminal state. Completed siblings stay
+completed even when the root fails. These are observations, not detached-result
+notifications: the native notifier ignores `attached: true` before delivery, batching,
+deduplication or parent-wake side effects. Existing public tool error text stays intact.

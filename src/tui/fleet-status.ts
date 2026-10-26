@@ -1,3 +1,4 @@
+import { isWorkerPresentationDelegated } from "../shared/worker-presentation.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type EditorComponent, isKeyRelease, Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { snapshotExternalRuns } from "../api/external-runs.ts";
@@ -408,6 +409,7 @@ export function collectFleetStatusEntries(state: SubagentState): FleetStatusEntr
 		materializedChildrenByWorkflow.set(parentKey, childIds);
 	}
 	for (const control of state.foregroundControls.values()) {
+		if (control.mode === "single" && !control.nestedChildren?.length && (control.activeChildren?.size ?? 0) <= 1 && isWorkerPresentationDelegated(state.currentSessionId, control.runId)) continue;
 		const linkedParentKey = linkedWorkflowParentKey(control.parentWorkflowRunId, activeWorkflowKeys);
 		if (control.activeChildren) {
 			const nestedChildren = control.nestedChildren ?? [];
@@ -454,6 +456,7 @@ export function collectFleetStatusEntries(state: SubagentState): FleetStatusEntr
 
 	for (const job of state.asyncJobs.values()) {
 		if (!isActiveState(job.status)) continue;
+		if (job.mode === "single" && !job.nestedChildren?.length && !job.steps?.some((step) => step.children?.length) && isWorkerPresentationDelegated(state.currentSessionId, job.asyncId)) continue;
 		const startedAt = job.startedAt ?? job.updatedAt ?? now;
 		const linkedParentKey = linkedWorkflowParentKey(job.parentWorkflowRunId, activeWorkflowKeys);
 		if (job.mode === "workflow") {

@@ -1,3 +1,4 @@
+import { isWorkerPresentationDelegated } from "../../shared/worker-presentation.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -112,7 +113,10 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 	const rerenderWidget = (ctx: ExtensionContext, jobs = Array.from(state.asyncJobs.values())) => {
 		options.onJobsChanged?.();
 		if (state.widgetsSuspended) return;
-		renderWidget(ctx, options.widgetEnabled === false ? [] : jobs, options.widgetCollapsed, options.widgetLayout);
+		// Filter only presentation input, never tracked jobs or RPC inspection payloads.
+		const visible = (ctx as { mode?: string }).mode === "rpc" ? jobs : jobs.filter((job) =>
+			job.mode !== "single" || !!job.nestedChildren?.length || !!job.steps?.some((step) => step.children?.length) || !isWorkerPresentationDelegated(state.currentSessionId, job.asyncId));
+		renderWidget(ctx, options.widgetEnabled === false ? [] : visible, options.widgetCollapsed, options.widgetLayout);
 		(ctx.ui as { requestRender?: () => void }).requestRender?.();
 	};
 	const rerenderLastWidget = (jobs = Array.from(state.asyncJobs.values())) => {
@@ -132,7 +136,7 @@ export function createAsyncJobTracker(pi: Pick<ExtensionAPI, "events">, state: S
 			if (state.widgetsSuspended) return;
 			const requestRender = (ctx.ui as { requestRender?: () => void }).requestRender;
 			if (requestRender) requestRender.call(ctx.ui);
-			else renderWidget(ctx, Array.from(state.asyncJobs.values()), options.widgetCollapsed, options.widgetLayout);
+			else rerenderWidget(ctx);
 		});
 	};
 	const refreshWidget = (ctx: ExtensionContext) => rerenderWidget(ctx);

@@ -13,6 +13,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { captureWorkerPresentation, invalidateWorkerPresentation, onWorkerPresentationChanged } from "../shared/worker-presentation.ts";
 import { invalidateWorkerDecisionAuthority } from "../shared/worker-decision-authority.ts";
 import { readNativeWorkerAuthorityRouting } from "../shared/native-worker-authority-routing.ts";
 import * as fs from "node:fs";
@@ -548,6 +549,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 	// Capture primitive pairs at session start/admission, never a cleanup-time current-owner lookup.
 	// Registrants retain their disposer for late registrations this runtime never observes.
 	const workerDecisionOwners = new Map<string, string>();
+	const presentationOwners = new Map<string, ReturnType<typeof captureWorkerPresentation>>();
+	const invalidatePresentationOwners = () => {
+		const captured = [...presentationOwners.values()];
+		presentationOwners.clear();
+		for (const owner of captured) invalidateWorkerPresentation(owner);
+	};
 	const invalidateWorkerDecisionOwners = () => {
 		const captured = [...workerDecisionOwners];
 		workerDecisionOwners.clear();
@@ -882,6 +889,14 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		}
 	});
 
+	const unsubscribePresentation = onWorkerPresentationChanged((sessionId) => {
+		if (sessionId !== state.currentSessionId) return;
+		const owner = captureWorkerPresentation(sessionId);
+		if (owner) presentationOwners.set(sessionId, owner);
+		withLastUiContext((ctx) => refreshWidget(ctx));
+		fleetStatus?.refresh();
+	});
+
 	const cleanupSessionArtifacts = (ctx: ExtensionContext) => {
 		try {
 			const sessionFile = ctx.sessionManager.getSessionFile();
@@ -995,6 +1010,8 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		cleanup(shutdownReason) {
 			if (runtimeCleaned) return;
 			runtimeCleaned = true;
+			invalidatePresentationOwners();
+			unsubscribePresentation();
 			invalidateWorkerDecisionOwners();
 			programStatus.dispose(shutdownReason);
 			releaseHostSessionLiveness();
@@ -1159,9 +1176,12 @@ export default function registerSubagentExtension(pi: ExtensionAPI): void {
 		parentWake.bindSession(ctx);
 		completionNotifier.bindSession(ctx.sessionManager);
 		installRuntime(ctx);
+		invalidatePresentationOwners();
 		invalidateWorkerDecisionOwners();
 		const { sessionId: decisionSessionId, routing: decisionOwner } = readNativeWorkerAuthorityRouting(ctx.sessionManager);
 		if (decisionOwner.kind === "active") workerDecisionOwners.set(decisionSessionId, decisionOwner.generation);
+		const presentationOwner = captureWorkerPresentation(decisionSessionId);
+		if (presentationOwner) presentationOwners.set(decisionSessionId, presentationOwner);
 		startSessionMaintenance();
 		scheduleModulePreload();
 		const recovering = event.reason === "startup" || event.reason === "reload" || event.reason === "resume";

@@ -6,6 +6,7 @@
  * observation channel, not a delivery acknowledgement.
  */
 
+import { bindWorkerPresentationMessage } from "../../shared/worker-presentation.ts";
 import { statSync } from "node:fs";
 import { debuglog } from "node:util";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -676,6 +677,8 @@ function sendCompletion(pi: Pick<ParentWake, "sendMessage" | "isHeld">, items: P
 		// Pi does not send details to the model. Hosts match runs by id; the text previews stay in content only.
 		details: { runs: details.map(notifyRunDetails) },
 	};
+	// Bind details identity: Pi copies the message envelope, but retains its details object.
+	bindWorkerPresentationMessage(message.details, items.map((item) => ({ sessionId: item.sessionId, runId: item.details.runId })));
 	// Pi can queue an accepted wake behind the current turn or past agent_settled.
 	// Recorded before sending in case Pi starts the message synchronously.
 	if (tracked) {
@@ -1079,6 +1082,7 @@ export default function registerSubagentNotify(
 		void deliver(data as CompletionNotification);
 	});
 	const unsubscribeForeground = pi.events.on(SUBAGENT_FOREGROUND_COMPLETE_EVENT, (data) => {
+		if ((data as { attached?: unknown } | null)?.attached === true) return;
 		void deliver(data as CompletionNotification);
 	});
 

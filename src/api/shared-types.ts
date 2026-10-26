@@ -8,6 +8,7 @@ export {
 	type AgentCapabilitiesSnapshot,
 	type AgentCapabilityRow,
 	type AsyncStartedEvent,
+	type SubagentAttachedForegroundCompleteEvent,
 	type ControlEvent,
 	type Details,
 	type ExecutionProjection,

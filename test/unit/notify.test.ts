@@ -1506,3 +1506,22 @@ describe("completion notice output size", () => {
 		assert.match(workflow, /- key=fix run=child-fix status=failed\n(?: {2}.*\n)*? {2}Error: Tool budget exhausted\n/);
 	});
 });
+
+it("attached foreground terminal observations never deliver, wake, or consume completion deduplication", async () => {
+	const sessionId = "attached-observation-session", events = createEventBus();
+	const messages: any[] = [];
+	let claims = 0;
+	const sendRegistry = createCompletionSendRegistry();
+	const originalClaim = sendRegistry.claim.bind(sendRegistry);
+	sendRegistry.claim = (...args) => { claims++; return originalClaim(...args); };
+	const notifier = registerSubagentNotify({ events, isHeld: () => false, sendMessage(message) { messages.push(message); return false; } }, { currentSessionId: sessionId, completionOwnerId: COMPLETION_OWNER_ID }, { batchConfig: { enabled: false }, sendRegistry });
+	const observation = { version: 1, attached: true, source: "foreground", mode: "single", sessionId, toolCallId: "public-tool", runId: "exact-leaf", parentWorkflowRunId: "root", workflowKey: "beta", agent: "worker", state: "failed", success: false, timestamp: Date.now() };
+	try {
+		events.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, observation);
+		events.emit(SUBAGENT_FOREGROUND_COMPLETE_EVENT, observation);
+		await Promise.resolve();
+		assert.equal(messages.length, 0); assert.equal(claims, 0); assert.equal(notifier.hasPendingDelivery(), false);
+		assert.equal(await notifier.deliver({ ...observation, attached: undefined, id: "actual-detached-notice", summary: "Existing detached completion" }), true);
+		assert.equal(messages.length, 1); assert.equal(claims, 1);
+	} finally { notifier.dispose(); }
+});

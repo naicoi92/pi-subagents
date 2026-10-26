@@ -2447,6 +2447,26 @@ export interface RunnerLauncher {
 export const SUBAGENT_ASYNC_COMPLETE_EVENT = "subagent:async-complete";
 export const SUBAGENT_PROCESS_TERMINAL_EVENT = "subagent:process-terminal";
 export const SUBAGENT_FOREGROUND_COMPLETE_EVENT = "subagent:foreground-complete";
+
+/** Observational attached-leaf completion; never a detached-result delivery or parent wake. */
+export interface SubagentAttachedForegroundCompleteEvent {
+	readonly version: 1;
+	readonly attached: true;
+	readonly source: "foreground";
+	readonly mode: "single";
+	readonly sessionId: string;
+	readonly toolCallId: string;
+	readonly runId: string;
+	readonly parentWorkflowRunId: string;
+	readonly workflowKey: string;
+	readonly agent: string;
+	readonly state: "complete" | "failed" | "stopped" | "paused" | "rejected";
+	readonly success: boolean;
+	readonly stopped?: boolean;
+	readonly interrupted?: boolean;
+	readonly timestamp: number;
+}
+
 export const SUBAGENT_CONTROL_EVENT = "subagent:control-event";
 export const SUBAGENT_CONTROL_INTERCOM_EVENT = "subagent:control-intercom";
 export const SUBAGENT_STEERING_NOTICE_EVENT = "subagent:steering-notice";

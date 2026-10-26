@@ -1,3 +1,4 @@
+import { isWorkerPresentationMessageDelegated } from "../shared/worker-presentation.ts";
 import { getMarkdownTheme, keyText, type Theme, type ThemeColor } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Markdown, MouseRegion, Spacer, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 import { SUBAGENT_CONTROL_MESSAGE_TYPE } from "../extension/control-notices.ts";
@@ -296,7 +297,15 @@ class SubagentMessageBlock extends Box {
 
 export function renderSubagentMessage(message: SubagentMessage, options: { expanded: boolean }, theme: Theme): Component | undefined {
 	const view = MESSAGE_VIEWS.get(message.customType)?.(message);
-	return view ? new SubagentMessageBlock(message, view, options.expanded, theme) : undefined;
+	if (!view) return undefined;
+	const native = new SubagentMessageBlock(message, view, options.expanded, theme);
+	if (message.customType !== "subagent-notify") return native;
+	// Ownership may end while Pi retains this component. Check every paint, not only construction.
+	return {
+		render: (width) => !options.expanded && typeof message.details === "object" && message.details !== null && isWorkerPresentationMessageDelegated(message.details)
+			? [] : native.render(width),
+		invalidate: () => native.invalidate(),
+	};
 }
 
 export function renderSubagentEntry(entry: SubagentEntry, options: { expanded: boolean }, theme: Theme): Component | undefined {
