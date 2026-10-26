@@ -117,6 +117,40 @@ it("NAT-COMPARISON-thinking: thinking-only delegation never claims explicit call
 	});
 });
 
+it("NAT-UNRESOLVED-assessed: bare specialized model can commit complete assessed effort without default baseline", async () => {
+	await withForeground(async (f, mock) => {
+		f.agent.name = "specialized-junior";
+		f.agent.thinking = undefined;
+		const registration = owner(f, { async decide(request, context) {
+			assert.deepEqual(request.policyContext.original, { kind: "unresolved", reason: "thinking-unresolved" });
+			const target = await context.resolveTarget("fixture/original");
+			assert.equal(target.kind, "resolved");
+			if (target.kind === "resolved") {
+				assert.deepEqual(target.baseline, { kind: "unresolved", reason: "thinking-unresolved" });
+				assert.deepEqual(target.supportedThinking, ["low", "medium", "high"]);
+			}
+			return { kind: "apply", model: "fixture/original", thinking: "medium", reason: "assessed" };
+		} });
+		try {
+			assert.equal((await launch(f)).isError, undefined);
+			assert.equal(mock.sessions[0]?.launch.model, "fixture/original:medium");
+		} finally { registration.dispose(); }
+	});
+});
+
+for (const response of ["missing-effort", "unsupported-effort", "assessment-unavailable"] as const) it(`NAT-UNRESOLVED-${response}: bare specialized launch cannot invent effort`, async () => {
+	await withForeground(async (f, mock) => {
+		f.agent.thinking = undefined;
+		const registration = owner(f, { async decide() {
+			if (response === "assessment-unavailable") return { kind: "reject", reason: "assessment-unavailable" };
+			if (response === "unsupported-effort") return { kind: "apply", model: "fixture/original", thinking: "max", reason: "assessed" };
+			return { kind: "apply", model: "fixture/original", reason: "assessed" } as WorkerDecision;
+		} });
+		try { assert.equal((await launch(f)).isError, true); assert.equal(mock.sessions.length, 0); }
+		finally { registration.dispose(); }
+	});
+});
+
 it("NAT-COMPARISON-missing-parent: missing parent remains unresolved instead of borrowing configured worker model", async () => {
 	await withForeground(async (f) => {
 		const registration = owner(f, { async decide(request) {

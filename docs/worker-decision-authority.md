@@ -49,6 +49,8 @@ Every accepted owner reply is `kind: "apply"` with explicit physical `model`, en
 
 The owner can instead explicitly reject with a typed reason. Classification and fallback selection live in that owner, not this core. No model rankings, classifier, policy thresholds, guessed defaults or SDK session creation are included.
 
+An unresolved `original` or resolved target's unresolved `baseline` does not prevent assessment: the owner may select that target with a complete supported pair and `reason: "assessed"`. Final host validation still checks the exact pair before commitment and launch. Unresolved baseline is not permission to report verified retention, infer `high`, inherit parent effort, or fill missing assessment effort. Bare specialized roles therefore need an actual assessed effort or trusted resolved baseline; absent either, the owner must reject. Native metadata does not expose the later SDK session's per-model/global/default effort resolution.
+
 ## Trusted host seam
 
 `input.host` must supply:
