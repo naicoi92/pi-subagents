@@ -20,7 +20,7 @@ afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursiv
 function fixture(modelScope?: import("../../src/runs/shared/model-scope.ts").ModelScopeConfig) {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), "native-authority-")); roots.push(root);
 	const ctx = {
-		cwd: root, hasUI: false, ui: {},
+		cwd: root, hasUI: false, ui: {}, model: undefined as { provider: string; id: string } | undefined,
 		sessionManager: { getSessionId: () => "", getSessionFile: (): string | null => null },
 		modelRegistry: { getAvailable: (): Array<{ provider: string; id: string; reasoning: boolean; thinkingLevelMap?: { low?: string; medium: string; high: string } }> => [] },
 	};
@@ -58,6 +58,74 @@ it("N01-foreground: actual executor invokes authority before scripted factory wi
 		assert.equal(result.details?.results[0]?.thinking, "medium");
 		assert.equal(applied.length, 1);
 	} finally { registration.dispose(); mock.uninstall(); }
+});
+
+it("NAT-COMPARISON-parent: omitted caller separates parent fast comparison from retained default deep", async () => {
+	await withForeground(async (f, mock) => {
+		f.ctx.model = { provider: "fixture", id: "fast" };
+		f.ctx.modelRegistry.getAvailable = () => ["fast", "deep", "balanced"].map((id) => ({ provider: "fixture", id, reasoning: true, thinkingLevelMap: { low: "low", medium: "medium", high: "high" } }));
+		f.agent.model = "fixture/deep";
+		const registration = owner(f, { async decide(request) {
+			assert.deepEqual(request.policyContext.comparison, { kind: "resolved", model: "fixture/fast", provenance: "parent" });
+			assert.equal(request.policyContext.original.kind, "verified");
+			if (request.policyContext.original.kind === "verified") assert.equal(request.policyContext.original.model, "fixture/deep");
+			// Supplies the identities needed by the consumer's .45 balanced-confidence policy.
+			return { kind: "apply", model: "fixture/balanced", thinking: "medium", reason: "assessed" };
+		} });
+		try {
+			const result = await launch(f);
+			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			assert.equal(mock.sessions[0]?.launch.model, "fixture/balanced:medium");
+		} finally { registration.dispose(); }
+	});
+});
+
+it("NAT-COMPARISON-caller: explicit caller model wins parent identity without thinking suffix", async () => {
+	await withForeground(async (f, mock) => {
+		f.ctx.model = { provider: "fixture", id: "target" };
+		const registration = owner(f, { async decide(request) {
+			assert.deepEqual(request.policyContext.comparison, { kind: "resolved", model: "fixture/original", provenance: "explicit-caller" });
+			assert.equal(request.policyContext.original.kind, "verified");
+			if (request.policyContext.original.kind === "verified") {
+				assert.equal(request.policyContext.original.provenance, "explicit-launch");
+				assert.equal(request.policyContext.original.thinking, "low");
+			}
+			return selected;
+		} });
+		try {
+			assert.equal((await launch(f, false, undefined, { model: "fixture/original:low" })).isError, undefined);
+			assert.equal(mock.sessions[0]?.launch.model, "fixture/target:medium");
+		} finally { registration.dispose(); }
+	});
+});
+
+it("NAT-COMPARISON-thinking: thinking-only delegation never claims explicit caller model provenance", async () => {
+	await withForeground(async (f, mock) => {
+		f.ctx.model = { provider: "fixture", id: "target" };
+		const registration = owner(f, { async decide(request) {
+			assert.deepEqual(request.policyContext.comparison, { kind: "resolved", model: "fixture/target", provenance: "parent" });
+			const original = request.policyContext.original;
+			assert.equal(original.kind, "verified");
+			if (original.kind === "verified") { assert.equal(original.provenance, "host-effective"); assert.equal(original.model, "fixture/original"); assert.equal(original.thinking, "low"); }
+			return selected;
+		} });
+		try {
+			const result = await f.executor.executeDelegated("thinking-only", { agent: f.agent.name, task: "Review parser", async: false, artifacts: false, acceptance: false, delegatedThinkingOverride: "low" } as never, new AbortController().signal, undefined, f.ctx as never);
+			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			assert.equal(mock.sessions[0]?.launch.model, "fixture/target:medium");
+		} finally { registration.dispose(); }
+	});
+});
+
+it("NAT-COMPARISON-missing-parent: missing parent remains unresolved instead of borrowing configured worker model", async () => {
+	await withForeground(async (f) => {
+		const registration = owner(f, { async decide(request) {
+			assert.deepEqual(request.policyContext.comparison, { kind: "unresolved", reason: "model-unresolved" });
+			return { kind: "reject", reason: "baseline-unresolved" };
+		} });
+		try { assert.equal((await launch(f)).isError, true); }
+		finally { registration.dispose(); }
+	});
 });
 
 it("N02-async: actual direct async commits exact pair before descriptor and intercepted spawn", async (t) => {

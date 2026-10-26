@@ -19,7 +19,7 @@ function input(sessionId: string, generation: string, logicalLaunchId: string): 
 		sessionId,
 		control: { logicalLaunchId, runtimeAttemptId: "attempt-1", ownerGeneration: generation, context: "fresh", launchDeadline: 5000 },
 		facts: { task: "Implement bounded parser" },
-		policyContext: { definitionRevision: "d1", constraintRevision: "c1", modelContract: { kind: "selectable", models: ["provider/target"] }, original: { kind: "unresolved", reason: "thinking-unresolved" } },
+		policyContext: { definitionRevision: "d1", constraintRevision: "c1", comparison: { kind: "unresolved", reason: "model-unresolved" }, modelContract: { kind: "selectable", models: ["provider/target"] }, original: { kind: "unresolved", reason: "thinking-unresolved" } },
 		classifierTimeoutMs: 1000,
 		clock: { now: () => 1000, schedule: () => () => {} },
 		host: {

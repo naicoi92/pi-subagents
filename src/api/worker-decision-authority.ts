@@ -18,6 +18,7 @@ export {
 	type WorkerDecisionBaseline,
 	type WorkerDecisionBlockReason,
 	type WorkerDecisionClock,
+	type WorkerDecisionComparison,
 	type WorkerDecisionContext,
 	type WorkerDecisionControl,
 	type WorkerDecisionFacts,

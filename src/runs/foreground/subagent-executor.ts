@@ -15,7 +15,7 @@ import { getArtifactsDir, getProjectArtifactPackagingWarning, getProjectSubagent
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
 import { createCapacityResilientJsonWriter } from "../../shared/capacity-resilient-json.ts";
 import { isStorageCapacityError } from "../../shared/file-system-retry.ts";
-import { resolveEffectiveThinking, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
+import { resolveEffectiveThinking, splitKnownThinkingSuffix, toModelInfo, type ModelInfo } from "../../shared/model-info.ts";
 import {
 	beginForegroundChild,
 	finishForegroundChild,
@@ -7711,12 +7711,17 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				});
 				const originalThinking = delegatedThinkingOverride ?? nativeAgent.thinking;
 				const originalWithThinking = applyThinkingSuffix(originalModel, originalThinking, delegatedThinkingOverride !== undefined);
+				const callerModelExplicit = effectiveParams.model !== undefined;
+				const comparisonModel = callerModelExplicit ? originalModel : requestParentModel ? `${requestParentModel.provider}/${requestParentModel.id}` : undefined;
 				nativeWorkerDecision = await prepareNativeWorkerDecision({
 					sessionId: requestSessionId, routing: workerDecisionRouting,
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
 					agent: nativeAgent, task: effectiveParams.task ?? "", context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
-					originalProvenance: effectiveParams.model !== undefined || delegatedThinkingOverride !== undefined ? "explicit-launch" : "host-effective",
+					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",
+					comparison: comparisonModel
+						? { kind: "resolved", model: splitKnownThinkingSuffix(comparisonModel).baseModel, provenance: callerModelExplicit ? "explicit-caller" : "parent" }
+						: { kind: "unresolved", reason: "model-unresolved" },
 					timeoutMs: foregroundTimeout.timeoutMs, signal,
 					getConstraints() {
 						return {

@@ -11,7 +11,7 @@ function fixture(authority: WorkerDecisionAuthority) {
 	const input: NativeWorkerDecisionInput = {
 		sessionId, routing: getWorkerDecisionAuthoritySnapshot(sessionId), logicalLaunchId: "leaf-0",
 		agent: { name: "fixture", source: "runtime", filePath: "runtime:fixture", description: "Parser review", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, model: "fixture/original", thinking: "high" },
-		task: "Review parser", context: "fresh", originalModel: "fixture/original:high", originalThinking: "high", originalProvenance: "host-effective", timeoutMs: 5000, signal: new AbortController().signal,
+		task: "Review parser", context: "fresh", originalModel: "fixture/original:high", originalThinking: "high", originalProvenance: "host-effective", comparison: { kind: "resolved", model: "fixture/original", provenance: "parent" }, timeoutMs: 5000, signal: new AbortController().signal,
 		getConstraints: () => ({ availableModels: ["original", "target"].map((id) => ({ provider: "fixture", id, fullId: `fixture/${id}`, reasoning: true, thinkingLevelMap: { medium: "medium", high: "high" } })), modelScopes: [], admission: {} }),
 		admit() {},
 	};

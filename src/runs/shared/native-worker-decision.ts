@@ -27,6 +27,7 @@ export interface NativeWorkerDecisionInput {
 	originalModel?: string;
 	originalThinking?: string | false;
 	originalProvenance: "explicit-launch" | "host-effective";
+	comparison: WorkerDecisionPolicyContext["comparison"];
 	timeoutMs?: number;
 	signal: AbortSignal;
 	getConstraints(): NativeWorkerConstraints;
@@ -100,7 +101,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		sessionId: input.sessionId,
 		control: { logicalLaunchId: input.logicalLaunchId, runtimeAttemptId: randomUUID(), ownerGeneration: routing.generation, context: input.context, launchDeadline: deadlineAt },
 		facts: { task: input.task, role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
-		policyContext: { ...expected, modelContract, original: baseline(input.originalModel, input.originalThinking, input.originalProvenance) },
+		policyContext: { ...expected, modelContract, comparison: input.comparison, original: baseline(input.originalModel, input.originalThinking, input.originalProvenance) },
 		classifierTimeoutMs: routing.assessmentTimeoutMs, signal: input.signal, host,
 	};
 	const guard = () => {

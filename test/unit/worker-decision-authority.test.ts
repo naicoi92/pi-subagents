@@ -53,7 +53,7 @@ function fixture(authority?: WorkerDecisionAuthority) {
 		sessionId,
 		control: { logicalLaunchId: "leaf-1", runtimeAttemptId: "attempt-1", ownerGeneration: registration.generation, context: "fresh", launchDeadline: 5000 },
 		facts: { task: "Implement bounded parser; preserve high/deep/medium tokens.", role: { description: "Reviews parser correctness", provenance: "resolved-agent" }, capabilities: [{ description: "Can run parser unit tests", provenance: "host" }] },
-		policyContext: { definitionRevision: "definition-1", constraintRevision: "constraints-1", modelContract: { kind: "selectable", models: ["provider/target", "provider/original"] }, original: { kind: "verified", model: "provider/original", thinking: "low", provenance: "host-effective", definitionRevision: "definition-1", constraintRevision: "constraints-1" } },
+		policyContext: { definitionRevision: "definition-1", constraintRevision: "constraints-1", comparison: { kind: "resolved", model: "provider/parent", provenance: "parent" }, modelContract: { kind: "selectable", models: ["provider/target", "provider/original"] }, original: { kind: "verified", model: "provider/original", thinking: "low", provenance: "host-effective", definitionRevision: "definition-1", constraintRevision: "constraints-1" } },
 		classifierTimeoutMs: 1000,
 		clock,
 		host: {
@@ -590,6 +590,7 @@ it("C05-canonical: reordered nested policy records reuse exact commitment", asyn
 	try {
 		const first = await prepareWorkerDecision(f.input);
 		const reordered = {
+			comparison: { provenance: "parent" as const, model: "provider/parent", kind: "resolved" as const, ignored: "not policy" },
 			original: { constraintRevision: "constraints-1", definitionRevision: "definition-1", provenance: "host-effective" as const, thinking: "low" as const, model: "provider/original", kind: "verified" as const, ignored: "not policy" },
 			modelContract: { models: ["provider/target", "provider/original"], kind: "selectable" as const, ignored: true },
 			constraintRevision: "constraints-1", definitionRevision: "definition-1", ignored: "not policy",
@@ -604,11 +605,11 @@ it("C05-canonical: reordered nested policy records reuse exact commitment", asyn
 
 it("C05-canonical-unresolved: fixed model and unresolved records use named fields", async () => {
 	const f = fixture();
-	const policyContext = { definitionRevision: "definition-1", constraintRevision: "constraints-1", modelContract: { kind: "fixed" as const, model: "provider/target" }, original: { kind: "unresolved" as const, reason: "thinking-unresolved" as const } };
+	const policyContext = { definitionRevision: "definition-1", constraintRevision: "constraints-1", comparison: { kind: "unresolved" as const, reason: "model-unresolved" as const }, modelContract: { kind: "fixed" as const, model: "provider/target" }, original: { kind: "unresolved" as const, reason: "thinking-unresolved" as const } };
 	try {
 		const first = await prepareWorkerDecision({ ...f.input, policyContext });
 		assert.equal(first.kind, "committed");
-		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { original: { reason: "thinking-unresolved", kind: "unresolved" }, modelContract: { model: "provider/target", kind: "fixed" }, constraintRevision: "constraints-1", definitionRevision: "definition-1" } }), first);
+		assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { comparison: { reason: "model-unresolved", kind: "unresolved" }, original: { reason: "thinking-unresolved", kind: "unresolved" }, modelContract: { model: "provider/target", kind: "fixed" }, constraintRevision: "constraints-1", definitionRevision: "definition-1" } }), first);
 	} finally { f.registration.dispose(); }
 });
 
@@ -630,6 +631,43 @@ it("C05-canonical-invalid: malformed declared policy fields fail before assessme
 			{ ...f.input.policyContext, original: { kind: "verified", model: "provider/original", thinking: null } },
 		]) assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext } as PrepareWorkerDecisionInput), { kind: "blocked", reason: "invalid-request" });
 		assert.equal(calls, 0);
+	} finally { f.registration.dispose(); }
+});
+
+it("CORE-COMPARISON: comparison snapshot is frozen, projected, and claim-bound independently of retention", async () => {
+	let calls = 0;
+	const f = fixture({ async decide(request) {
+		calls++;
+		assert.deepEqual(request.policyContext.comparison, { kind: "resolved", model: "provider/parent", provenance: "parent" });
+		assert.ok(Object.isFrozen(request.policyContext.comparison));
+		assert.equal("comparison" in request.facts, false);
+		return decision;
+	} });
+	Object.assign(f.input.policyContext.comparison, { thinking: "high", ignored: true });
+	try {
+		assert.equal((await prepareWorkerDecision(f.input)).kind, "committed");
+		for (const comparison of [
+			{ kind: "resolved", model: "provider/other-parent", provenance: "parent" },
+			{ kind: "resolved", model: "provider/parent", provenance: "explicit-caller" },
+			{ kind: "unresolved", reason: "model-unresolved" },
+		] as const) assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { ...f.input.policyContext, comparison } }), { kind: "blocked", reason: "identity-conflict" });
+		assert.equal(calls, 1);
+	} finally { f.registration.dispose(); }
+});
+
+it("CORE-COMPARISON-invalid: missing or malformed comparison fails closed before assessment or claim", async () => {
+	let calls = 0;
+	const f = fixture({ async decide() { calls++; return decision; } });
+	try {
+		for (const comparison of [undefined, null, {},
+			{ kind: "resolved", model: "parent", provenance: "parent" },
+			{ kind: "resolved", model: "provider/parent:high", provenance: "parent" },
+			{ kind: "resolved", model: "provider/parent", provenance: "explicit-launch" },
+			{ kind: "resolved", model: "provider/parent" },
+			{ kind: "unresolved", reason: "thinking-unresolved" },
+		]) assert.deepEqual(await prepareWorkerDecision({ ...f.input, policyContext: { ...f.input.policyContext, comparison } } as PrepareWorkerDecisionInput), { kind: "blocked", reason: "invalid-request" });
+		assert.equal(calls, 0);
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "unconsumed" });
 	} finally { f.registration.dispose(); }
 });
 

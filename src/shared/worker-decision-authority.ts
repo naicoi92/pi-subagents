@@ -35,8 +35,14 @@ export interface WorkerDecisionFacts {
 	};
 	readonly capabilities?: readonly { readonly description: string; readonly provenance: "host" | "resolved-agent" }[];
 }
+/** Model identity for policy comparison only, never an execution-retention pair. */
+export type WorkerDecisionComparison =
+	| { readonly kind: "resolved"; readonly model: string; readonly provenance: "explicit-caller" | "parent" }
+	| { readonly kind: "unresolved"; readonly reason: "model-unresolved" };
 export interface WorkerDecisionPolicyContext extends WorkerDecisionRevisions {
 	readonly modelContract: { readonly kind: "fixed"; readonly model: string } | { readonly kind: "selectable"; readonly models: readonly string[] };
+	/** Explicit caller model, otherwise captured parent model; independent of agent defaults and thinking overrides. */
+	readonly comparison: WorkerDecisionComparison;
 	readonly original: WorkerDecisionBaseline;
 }
 export interface WorkerDecisionControl {
@@ -200,6 +206,13 @@ function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecis
 	} else if (contract.kind === "selectable" && Array.isArray(contract.models) && contract.models.every(isPhysicalModel)) {
 		modelContract = { kind: "selectable", models: contract.models.map((model) => model) };
 	} else fail("invalid-request");
+	const comparisonInput = policy.comparison;
+	let comparison: WorkerDecisionComparison;
+	if (comparisonInput.kind === "resolved" && isPhysicalModel(comparisonInput.model) && ["explicit-caller", "parent"].includes(comparisonInput.provenance)) {
+		comparison = { kind: "resolved", model: comparisonInput.model, provenance: comparisonInput.provenance };
+	} else if (comparisonInput.kind === "unresolved" && comparisonInput.reason === "model-unresolved") {
+		comparison = { kind: "unresolved", reason: "model-unresolved" };
+	} else fail("invalid-request");
 	const baseline = policy.original;
 	let original: WorkerDecisionBaseline;
 	if (baseline.kind === "verified") {
@@ -208,7 +221,7 @@ function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecis
 	} else if (baseline.kind === "unresolved" && ["model-unresolved", "thinking-unresolved", "provenance-unresolved"].includes(baseline.reason)) {
 		original = { kind: "unresolved", reason: baseline.reason };
 	} else fail("invalid-request");
-	return { definitionRevision, constraintRevision, modelContract, original };
+	return { definitionRevision, constraintRevision, modelContract, comparison, original };
 }
 function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionRequest {
 	const { control, facts, policyContext } = input;

@@ -100,7 +100,7 @@ it("N11-reload: same-session replacement retains consumed commitment without rea
 	const input: NativeWorkerDecisionInput = {
 		sessionId: ctx.sessionId, routing: getWorkerDecisionAuthoritySnapshot(ctx.sessionId), logicalLaunchId: "stable-leaf",
 		agent: { name: "runtime-fixture", source: "runtime", filePath: "runtime:runtime-fixture", description: "Parser review", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false },
-		task: "Review parser", context: "fresh", originalModel: "fixture/original:high", originalThinking: "high", originalProvenance: "host-effective", timeoutMs: 5000, signal: new AbortController().signal,
+		task: "Review parser", context: "fresh", originalModel: "fixture/original:high", originalThinking: "high", originalProvenance: "host-effective", comparison: { kind: "resolved", model: "fixture/original", provenance: "parent" }, timeoutMs: 5000, signal: new AbortController().signal,
 		getConstraints: () => ({ availableModels: ctx.modelRegistry.getAvailable().map((model) => ({ ...model, fullId: `${model.provider}/${model.id}` })), modelScopes: [], admission: {} }), admit() {},
 	};
 	let second: WorkerDecisionAuthorityRegistration | undefined; let after: ReturnType<typeof runtime> | undefined;

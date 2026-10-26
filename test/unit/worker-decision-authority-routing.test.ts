@@ -20,7 +20,7 @@ function fixture(authority: WorkerDecisionAuthority = { async decide() { return 
 		sessionId,
 		control: { logicalLaunchId: "leaf-1", runtimeAttemptId: "attempt-1", ownerGeneration: registration.generation, context: "fresh", launchDeadline: 5000 },
 		facts: { task: "Implement bounded parser" },
-		policyContext: { definitionRevision: "d1", constraintRevision: "c1", modelContract: { kind: "selectable", models: ["provider/target"] }, original: { kind: "unresolved", reason: "thinking-unresolved" } },
+		policyContext: { definitionRevision: "d1", constraintRevision: "c1", comparison: { kind: "unresolved", reason: "model-unresolved" }, modelContract: { kind: "selectable", models: ["provider/target"] }, original: { kind: "unresolved", reason: "thinking-unresolved" } },
 		classifierTimeoutMs: 1000,
 		clock: { now: () => 1000, schedule: () => () => {} },
 		host: {
