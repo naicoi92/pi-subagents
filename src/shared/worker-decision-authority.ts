@@ -79,6 +79,20 @@ export interface AppliedWorkerDecision extends WorkerDecisionPair, WorkerDecisio
 	readonly reason: WorkerDecisionReason;
 	readonly digest: string;
 }
+export const SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT = "subagent:worker-decision-accepted";
+/** Receipt-to-leaf binding only, not proof of child execution. No task or request payload. */
+export interface SubagentWorkerDecisionAcceptedEvent {
+	readonly version: 1;
+	readonly sessionId: string;
+	/** Originating public tool call, shared by workflow siblings; not recursive internal execution ID. */
+	readonly toolCallId: string;
+	/** Actual leaf run ID, never the workflow aggregate. */
+	readonly runId: string;
+	readonly logicalLaunchId: string;
+	readonly receipt: AppliedWorkerDecision;
+	readonly parentWorkflowRunId?: string;
+	readonly workflowKey?: string;
+}
 export interface WorkerDecisionAuthority {
 	decide(request: WorkerDecisionRequest, context: WorkerDecisionContext): Promise<WorkerDecision>;
 	/** Logical commitment only, never proof of spawn or provider execution. Invoked at most once. */

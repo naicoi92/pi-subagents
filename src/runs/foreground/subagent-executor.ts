@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { WorkerDecisionAuthorityError, type WorkerDecisionAuthoritySnapshot } from "../../shared/worker-decision-authority.ts";
+import { SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT, WorkerDecisionAuthorityError, type SubagentWorkerDecisionAcceptedEvent, type WorkerDecisionAuthoritySnapshot } from "../../shared/worker-decision-authority.ts";
 import { prepareNativeWorkerDecision, type NativeWorkerDecision } from "../shared/native-worker-decision.ts";
 import { childSessionFactory } from "../shared/child-session.ts";
 import { applyThinkingSuffix, resolvePiLaunchToolPlan } from "../shared/child-tool-plan.ts";
@@ -4356,6 +4356,7 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 		: undefined;
 
 	const deadlineAt = data.deadlineAt ?? (data.timeoutMs !== undefined ? Date.now() + data.timeoutMs : undefined);
+	let executionStarted = false;
 	let r: Awaited<ReturnType<typeof runSync>> | undefined;
 	let resolveDetachedWorkflowChild: ((result: Awaited<ReturnType<typeof runSync>>) => void) | undefined;
 	const detachedWorkflowChild = params.workflowAwaitDetached === true
@@ -4388,6 +4389,19 @@ async function runSinglePath(data: ExecutionContextData, deps: ExecutorDeps): Pr
 				childSessionControls = controls;
 				if (pendingRuntimeStop) controls.stop(pendingRuntimeStop);
 			},
+			onExecutionStart: data.nativeWorkerDecision ? () => {
+				if (executionStarted) return;
+				executionStarted = true;
+				const event: SubagentChildStatusEvent = {
+					type: "subagent.child-status", version: 1,
+					runId: params.workflowParentRunId ?? runId,
+					childId: params.workflowKey ?? "step:0", status: "started", ts: Date.now(),
+					agent: params.agent!,
+					...(params.workflowParentRunId ? { childRunId: runId, workflowKey: params.workflowKey } : { stepIndex: 0 }),
+				};
+				try { deps.pi.events.emit(SUBAGENT_CHILD_STATUS_EVENT, event); }
+				catch { /* Lifecycle observation is advisory. */ }
+			} : undefined,
 			context: data.contextPolicy.contextForAgent(params.agent!),
 			unknownAgentDiagnosticContext: data.unknownAgentDiagnosticContext,
 			runFanoutBudget: params.runFanoutAdmitted ? data.runFanoutBudget : { ...data.runFanoutBudget, parentPath: `${data.runFanoutBudget.parentPath ? `${data.runFanoutBudget.parentPath}/` : ""}single` },
@@ -4629,7 +4643,8 @@ function duplicateSubagentCallResult(params: SubagentParamsLike): AgentToolResul
 	};
 }
 
-const workflowLaunchObservers = new WeakMap<object, (launch: { agent: string; sessionName?: string; sessionFile?: string; async: boolean; runId?: string }) => void>();
+const workflowOriginToolCallIds = new WeakMap<object, string>();
+const workflowLaunchObservers = new WeakMap<object, (launch: { agent: string; sessionName?: string; sessionFile?: string; async: boolean; runId?: string; workerDecisionAccepted?: boolean }) => void>();
 const workflowOwnedUsageBudgets = new WeakMap<object, UsageBudgetConfig>();
 const workflowRetainedRequiredExtensions = new WeakMap<object, RequiredChildExtensionSnapshot>();
 
@@ -5443,6 +5458,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		if (projectScopeError) return projectScopeError;
 		const deps = withSessionProjectTrust(executorDeps, ctx);
 		const workflowLaunchObserver = workflowLaunchObservers.get(params);
+		const originToolCallId = workflowOriginToolCallIds.get(params) ?? _id;
 		const inheritedUsageBudget = workflowOwnedUsageBudgets.get(params);
 		const retainedRequiredExtensions = workflowRetainedRequiredExtensions.get(params);
 		let delegatedThinkingOverride = delegatedThinkingOverrides.get(params);
@@ -6367,6 +6383,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 									preparedChildParams = childRequest;
 									if (workflowUsageBudget.budget) workflowOwnedUsageBudgets.set(childRequest, workflowUsageBudget.budget);
 									if (workflowRequiredExtensions) workflowRetainedRequiredExtensions.set(childRequest, workflowRequiredExtensions);
+									workflowOriginToolCallIds.set(childRequest, originToolCallId);
 									workflowLaunchObservers.set(childRequest, (launch) => {
 										if (launch.runId) appendWorkflowChildJournal(asyncDir, { type: "start", key, fingerprint: journalFingerprint, runId: launch.runId });
 										const step = status.steps?.find((candidate) => candidate.workflowKey === key);
@@ -6377,7 +6394,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 											step.async = launch.async;
 											if (launch.runId) step.runId = launch.runId;
 											if (childRequest.lane) step.lane = childRequest.lane;
-											if (step.runId) pendingWorkflowChildAnnouncements.set(key, step);
+											if (step.runId && !launch.workerDecisionAccepted) pendingWorkflowChildAnnouncements.set(key, step);
 											persist({ tolerateStatusWriteFailure: true });
 										}
 										recordMissionWorkflowChild(missionBinding, workflowRunId, key, { status: "running", agent: launch.agent, ...(launch.sessionFile ? { sessionPath: launch.sessionFile } : {}) });
@@ -6663,6 +6680,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 								if (childAgent?.runner?.type === "external-cli" || childAgent?.runner?.type === "external-job") throw new Error("Workflow child permit supports native Pi children only.");
 								workflowPermitContexts.set(childRequest, { child: { permit: delegatedWorkflowPermit, workflowRunId: foregroundWorkflowRunId, childKey: key } });
 							}
+							workflowOriginToolCallIds.set(childRequest, originToolCallId);
 							workflowLaunchObservers.set(childRequest, (launch) => {
 								childLaunches.set(key, { agent: launch.agent, ...(launch.runId ? { runId: launch.runId } : {}) });
 								// Telemetry must not decide the child's outcome, as with onTrace in scripted-workflow.
@@ -8129,12 +8147,27 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		};
 
+		const withWorkerDecisionBinding = (result: AgentToolResult<Details>): AgentToolResult<Details> => nativeWorkerDecision
+			? { ...result, details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } }
+			: result;
 		let nestedForegroundStarted = false;
 		let asyncLaunchFailed = false;
 		try {
 			if (effectiveAsync) {
 				deps.state.liveAsyncSessionRoots ??= new Map();
 				deps.state.liveAsyncSessionRoots.set(asyncRunId, sessionRoot);
+			}
+			if (nativeWorkerDecision) {
+				const receipt = nativeWorkerDecision.receipt;
+				const event: SubagentWorkerDecisionAcceptedEvent = Object.freeze({
+					version: 1, sessionId: requestSessionId, toolCallId: originToolCallId,
+					runId: effectiveAsync ? asyncRunId : runId,
+					logicalLaunchId: receipt.logicalLaunchId, receipt,
+					...(effectiveParams.workflowParentRunId ? { parentWorkflowRunId: effectiveParams.workflowParentRunId } : {}),
+					...(effectiveParams.workflowKey ? { workflowKey: effectiveParams.workflowKey } : {}),
+				});
+				try { deps.pi.events.emit(SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT, event); }
+				catch { /* Observers cannot change launch admission or execution. */ }
 			}
 			if (workflowLaunchObserver) {
 				const singleTask = hasTasks && effectiveParams.tasks?.length === 1 ? effectiveParams.tasks[0] : undefined;
@@ -8150,13 +8183,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						: undefined;
 				if (launch) {
 					workflowLaunchObservers.delete(params);
-					workflowLaunchObserver(launch);
+					workflowLaunchObserver({ ...launch, ...(nativeWorkerDecision ? { workerDecisionAccepted: true } : {}) });
 				}
 			}
 			const asyncResult = await runAsyncPath(execData, deps);
 			if (asyncResult) {
 				asyncLaunchFailed = asyncResult.isError === true;
-				return attachMission(withRunFanoutBudget(withResolvedContext(asyncResult, contextPolicy.contextSummary), runFanoutBudget));
+				return withWorkerDecisionBinding(attachMission(withRunFanoutBudget(withResolvedContext(asyncResult, contextPolicy.contextSummary), runFanoutBudget)));
 			}
 			if (foregroundControl) {
 				writeNestedForegroundEvent("subagent.nested.started");
@@ -8166,13 +8199,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			if (hasSingle) {
 				const result = await runSinglePath(execData, deps);
 				writeNestedForegroundEvent("subagent.nested.completed", result);
-				return attachMission(withRunFanoutBudget(withResolvedContext(result, contextPolicy.contextSummary), runFanoutBudget, { annotateContent: runFanoutAnnotateContent }));
+				return withWorkerDecisionBinding(attachMission(withRunFanoutBudget(withResolvedContext(result, contextPolicy.contextSummary), runFanoutBudget, { annotateContent: runFanoutAnnotateContent })));
 			}
 		} catch (error) {
 			asyncLaunchFailed = effectiveAsync;
 			const errorResult = toExecutionErrorResult(effectiveParams, error, contextPolicy.contextSummary);
 			if (nestedForegroundStarted) writeNestedForegroundEvent("subagent.nested.completed", errorResult);
-			return attachMission(errorResult);
+			return withWorkerDecisionBinding(attachMission(errorResult));
 		} finally {
 			if (effectiveAsync && (asyncLaunchFailed || (activeAsyncCapacity && !activeAsyncCapacity.owner.runnerStartedAt))) deps.state.liveAsyncSessionRoots?.delete(asyncRunId);
 			if (activeAsyncCapacity && !activeAsyncCapacity.owner.runnerStartedAt) activeAsyncCapacity.rollback();

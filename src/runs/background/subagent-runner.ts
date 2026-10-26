@@ -232,6 +232,8 @@ export interface SubagentRunConfig {
 	launchBarrierToken?: string;
 	parentWorkflowRunId?: string;
 	workflowKey?: string;
+	/** Originating owned leaf requests truthful execution-boundary telemetry. */
+	reportNativeExecutionStart?: boolean;
 	lane?: WorkflowLaneMetadata;
 	launcher?: RunnerLauncher;
 }
@@ -701,6 +703,7 @@ interface SingleStepContext {
 	runFanoutBudget?: RunFanoutBudgetDescriptor;
 	onAttemptStart?: (attempt: { model?: string; thinking?: string; contextLimit?: number }) => void;
 	onChildEvent?: (event: ChildEvent) => void;
+	onExecutionStart?: () => void;
 	onExternalProcess?: (process: ExternalProcessStatus) => void;
 	prepareExternalActivity?: (cwd: string, signal: AbortSignal) => Promise<void>;
 	onExternalStreamActivity?: () => void;
@@ -1222,6 +1225,7 @@ export async function runSingleStepInner(
 			timeoutMessage: ctx.timeoutMessage,
 			stopMessage: ctx.stopMessage,
 			onChildEvent: ctx.onChildEvent,
+			onExecutionStart: ctx.onExecutionStart,
 			onContextWindow: (contextLimit) => ctx.onAttemptStart?.({ ...attemptModel, contextLimit }),
 			transcriptWriter,
 			toolTimeoutMs: ctx.toolTimeoutMs,
@@ -3051,6 +3055,19 @@ export async function runSubagent(
 		};
 		refreshUsageBudget();
 	};
+	const startedNativeChildren = new Set<number>();
+	const announceNativeExecutionStart = (flatIndex: number): void => {
+		if (!config.reportNativeExecutionStart || startedNativeChildren.has(flatIndex)) return;
+		const step = requiredStatusStep(statusPayload, flatIndex);
+		startedNativeChildren.add(flatIndex);
+		appendJsonl(eventsPath, JSON.stringify({
+			type: "subagent.child-status", version: 1,
+			runId: config.parentWorkflowRunId ?? id,
+			childId: config.workflowKey ?? childStopTargetId(flatIndex), status: "started", ts: Date.now(),
+			source: "async", stepIndex: flatIndex, agent: step.agent,
+			...(config.parentWorkflowRunId ? { childRunId: id, workflowKey: config.workflowKey } : {}),
+		} satisfies SubagentChildStatusEvent));
+	};
 	const updateStepFromChildEvent = (flatIndex: number, event: ChildEvent): void => {
 		const step = statusPayload.steps[flatIndex];
 		if (!step) return;
@@ -4581,6 +4598,7 @@ export async function runSubagent(
 				toolTimeoutMs: seqStep.toolTimeoutMs ?? config.toolTimeoutMs,
 				onAttemptStart: (attempt) => updateStepModel(flatIndex, attempt.model, attempt.thinking, attempt.contextLimit),
 				onChildEvent: (event) => updateStepFromChildEvent(flatIndex, event),
+				onExecutionStart: () => announceNativeExecutionStart(flatIndex),
 				onExternalProcess: (process) => updateExternalProcess(flatIndex, process),
 				prepareExternalActivity: (externalCwd, signal) => prepareExternalActivity(flatIndex, externalCwd, signal),
 				onExternalStreamActivity: () => recordExternalStreamActivity(flatIndex),

@@ -2195,6 +2195,7 @@ export function executeAsyncSingle(
 			{
 				id,
 				...(params.toolCallId ? { toolCallId: params.toolCallId } : {}),
+				...(params.beforeNativeSpawn ? { reportNativeExecutionStart: true } : {}),
 				steps: [
 					{
 						parentSessionId: launchParentSessionId,

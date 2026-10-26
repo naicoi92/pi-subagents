@@ -1,5 +1,6 @@
 export {
 	WORKER_DECISION_AUTHORITY_LIMITS,
+	SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT,
 	disposeWorkerDecisionSession,
 	getWorkerDecisionAuthoritySnapshot,
 	getWorkerDecisionState,
@@ -8,6 +9,7 @@ export {
 	registerWorkerDecisionAuthority,
 	WorkerDecisionAuthorityError,
 	type AppliedWorkerDecision,
+	type SubagentWorkerDecisionAcceptedEvent,
 	type PreparedWorkerDecision,
 	type PrepareWorkerDecisionInput,
 	type RegisterWorkerDecisionAuthorityInput,

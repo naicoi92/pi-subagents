@@ -97,6 +97,8 @@ export interface RunChildSessionInput {
 	timeoutMessage?: string;
 	stopMessage?: string;
 	onChildEvent?: (event: ChildEvent) => void;
+	/** First actual native execution event after startup and cancellation gates. */
+	onExecutionStart?: () => void;
 	onContextWindow?: (contextWindow: number) => void;
 	transcriptWriter?: ChildTranscriptWriter;
 	toolTimeoutMs?: number;
@@ -418,6 +420,7 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 			activeToolTimeoutKeysByName.set(toolName, keys);
 		};
 
+		let executionStarted = false;
 		const processEvent = (raw: ChildSessionEvent): void => {
 			if (settled) return;
 			partialOutput.observe(raw);
@@ -470,6 +473,11 @@ export function runChildSession(input: RunChildSessionInput): Promise<RunChildSe
 				return;
 			}
 
+			if (!executionStarted && (event.type === "agent_start" || event.type === "turn_start") && !interrupted && !timedOut && !stopped) {
+				executionStarted = true;
+				try { input.onExecutionStart?.(); }
+				catch { /* Observers cannot decide execution outcome. */ }
+			}
 			input.onChildEvent?.(event);
 
 			if (event.type === "tool_execution_end") {

@@ -998,6 +998,7 @@ async function runSingleAttempt(
 			emitUpdateSnapshot(output || "(running...)");
 		};
 
+		let executionStarted = false;
 		const processEvent = (evt: ChildSessionEvent & { message?: Message; toolName?: string; toolCallId?: string; args?: unknown; willRetry?: unknown }) => {
 			if (lifecycleFinished) return;
 			partialOutput.observe(evt);
@@ -1032,6 +1033,11 @@ async function runSingleAttempt(
 					abortChild();
 					return;
 				}
+			}
+			if (!executionStarted && (evt.type === "agent_start" || evt.type === "turn_start") && !abortedBySignal && !interruptedByControl && !result.timedOut && !hostStopReason) {
+				executionStarted = true;
+				try { options.onExecutionStart?.(); }
+				catch { /* Observers cannot decide execution outcome. */ }
 			}
 			const lifecycleAction = projectChildLifecycle(evt, false, childLifecycleState);
 			if (evt.type === "agent_settled" && lifecycleAction === "start-drain") {

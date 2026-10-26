@@ -115,3 +115,35 @@ There is no LRU eviction, reset API or automatic retry that forgets consumed wor
 A follow-on durable integration must persist claim before inference and block indeterminate crash recovery, rather than reconstruct a missing claim as unconsumed. It must separately prove child identity/termination around ambiguous spawn.
 
 See [API-core acceptance matrix](testing/worker-decision-authority-core.md), [routing-delta acceptance matrix](testing/worker-decision-authority-routing.md) and [native wiring matrix](testing/worker-decision-authority-native.md) for scoped tests and deferred proof boundaries.
+
+## Executor receipt-to-run correlation
+
+`pi-subagents/worker-decision-authority` exports `SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT` (`subagent:worker-decision-accepted`) and readonly `SubagentWorkerDecisionAcceptedEvent`:
+
+```ts
+{
+  readonly version: 1;
+  readonly sessionId: string;
+  readonly toolCallId: string;
+  readonly runId: string;
+  readonly logicalLaunchId: string;
+  readonly receipt: AppliedWorkerDecision;
+  readonly parentWorkflowRunId?: string;
+  readonly workflowKey?: string;
+}
+```
+
+The executor emits one frozen notification after binding each owned native leaf, before execution. `receipt` is the exact frozen consumed receipt, including decision digest and deciding owner generation, not a copied request or native launch-contract digest. No task, prompt, authorization or request payload is exposed. `sessionId` is captured originating authority identity; `toolCallId` is originating public tool call (shared by workflow siblings), not recursive internal execution ID. `runId` is actual leaf run, never workflow aggregate. Treat `logicalLaunchId` as opaque: do not construct `${runId}:leaf:0` or assign one receipt to an entire workflow. Internal compaction attempts reuse the binding without another notification. Observer exceptions cannot reject a launch. Notification has no retry/outbox guarantee.
+
+**Accepted does not mean running.** Owned foreground and direct-async native leaves report `subagent:child-status` `started` only at first observed native `agent_start`/`turn_start`, after startup/cancellation checks. Mere session creation and `subagent:async-started` (runner process launched, native step may still be pending) are not this boundary. Owned workflow launch observers no longer announce early starts. Never-owned behavior stays unchanged.
+
+Lifecycle joins:
+
+- Ordinary native leaf: child-status `runId === accepted.runId`.
+- Workflow native leaf: child-status `runId === accepted.parentWorkflowRunId`, `childRunId === accepted.runId`, and `childId`/`workflowKey === accepted.workflowKey`. Starting one sibling never starts another.
+- Bound owned leaf tool results include `Details.runId` and originating `Details.toolCallId`, even for empty-results `isError` from failed spawn or final admission. Preaccept errors do not invent a binding. Foreground attached completion uses this structured result, not a notification or text parsing. `stopped` means cancelled; `interrupted`/`detached` means paused/detached; `timedOut`, nonzero `exitCode`, or tool `isError` means failed; clean zero exit means completed. Existing acceptance/structured-output failure semantics remain authoritative.
+- Ordinary async completion uses existing `subagent:async-complete.runId` plus originating `sessionId`, terminal `state` and `success`. Detached foreground completion uses `subagent:foreground-complete.runId`; its `id` separately includes task-index suffix. Attached foreground does not emit that notification.
+- Workflow completion/root tool result contains versioned `workflowChildren`: join actual `workflowRunId` + child `childId` and verify child `runId` where present. Each child has its own `completed`/`failed`/`stopped`/`paused`/`rejected`/`detached` state. Root state must not overwrite siblings. Pending/running inventory is not native execution evidence.
+- Child-status `stopped` is explicit child-stop cancellation evidence (runner `reason: "user"`), not normal teardown or success. Failure/cancellation before native turn may have terminal result without any `started`.
+
+Consumers must key by originating session and actual leaf identity, preserve terminal state under duplicate/reordered delivery, and match receipt digest/owner generation rather than current owner/session after navigation. This notification adds no consumer state framework or authority. Unsupported raw deferred chain/fanout/nested transport, management recovery and durable replay remain unchanged.

@@ -303,3 +303,27 @@ for (const mode of ["foreground", "background"] as const) {
 		assert.equal(result.error, "Provider finish_reason: content_filter\nReply text: Blocked by the provider's usage policy.");
 	});
 }
+
+for (const mode of ["foreground", "background"] as const) for (const cancelled of [false, true]) {
+	it(`reports ${mode} execution once at first real turn, not creation${cancelled ? " or cancelled turn" : ""}`, async () => {
+		let listener: Parameters<ChildSession["subscribe"]>[0] = () => {};
+		let executionStarts = 0;
+		let stop: (() => void) | undefined;
+		const session: ChildSession = {
+			subscribe(handler) { listener = handler; return () => {}; },
+			async prompt() {
+				assert.equal(executionStarts, 0, "session creation alone is not running");
+				if (cancelled) stop!();
+				listener({ type: "agent_start" }); listener({ type: "turn_start" }); listener({ type: "agent_start" });
+				assert.equal(executionStarts, cancelled ? 0 : 1);
+			},
+			async steer() {}, async followUp() {}, async abort() {}, async dispose() {},
+			messages: [], sessionId: "execution-boundary", modelId: "mock/model",
+		};
+		const factory: ChildSessionFactory = { async create() { assert.equal(executionStarts, 0); return session; }, async dispose() {} };
+		const onExecutionStart = () => { executionStarts++; };
+		if (mode === "foreground") await runSync(process.cwd(), makeAgentConfigs(["worker"]), "worker", "Finish", { childSessionFactory: factory, onExecutionStart, onChildSession(controls) { stop = () => controls.stop("fixture stop"); } });
+		else await runChildSession({ factory, launch, prompt: "Finish", appendChildEvent() {}, writeOutputLine() {}, onExecutionStart, registerStop(handler) { stop = handler; } });
+		assert.equal(executionStarts, cancelled ? 0 : 1);
+	});
+}

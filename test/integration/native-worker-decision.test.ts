@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { syncBuiltinESMExports } from "node:module";
 import { afterEach, it } from "node:test";
 import { createSubagentExecutor } from "../../src/runs/foreground/subagent-executor.ts";
+import { runSubagent } from "../../src/runs/background/subagent-runner.ts";
 import { registerWorkerDecisionAuthority, invalidateWorkerDecisionAuthority, getWorkerDecisionAuthoritySnapshot, disposeWorkerDecisionSession, type WorkerDecisionAuthority, type WorkerDecision, type WorkerDecisionRequest, type AppliedWorkerDecision } from "../../src/api/worker-decision-authority.ts";
 import { createMockPi } from "../support/mock-pi.ts";
 import * as os from "node:os";
@@ -28,14 +29,16 @@ function fixture(modelScope?: import("../../src/runs/shared/model-scope.ts").Mod
 	ctx.sessionManager.getSessionId = () => sessionId;
 	ctx.modelRegistry.getAvailable = () => ["original", "target"].map((id) => ({ provider: "fixture", id, reasoning: true, thinkingLevelMap: { low: "low", medium: "medium", high: "high" } }));
 	const agent: AgentConfig = { name: "runtime-worker", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, filePath: "", source: "runtime", model: "fixture/original", thinking: "high", description: "Reviews bounded parser correctness", definitionDigest: "runtime-definition-1" };
+	const events: Array<{ channel: string; payload: any }> = [];
+	let observe: ((channel: string, payload: any) => void) | undefined;
 	const executor = createSubagentExecutor({
-		pi: { events: { on() { return () => {}; }, emit() {} }, getSessionName() {} } as any,
+		pi: { events: { on() { return () => {}; }, emit(channel: string, payload: unknown) { events.push({ channel, payload }); observe?.(channel, payload); } }, sendMessage() {}, getSessionName() {} } as any,
 		state: { baseCwd: root, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null } as any,
 		config: { intercomBridge: { mode: "off" } }, asyncByDefault: false, tempArtifactsDir: root,
 		getSubagentSessionRoot: () => path.join(root, "sessions"), expandTilde: (value) => value,
 		discoverAgents: () => ({ agents: [agent], modelScope }),
 	});
-	return { root, ctx, sessionId, agent, executor };
+	return { root, ctx, sessionId, agent, executor, events, observe(handler: (channel: string, payload: any) => void) { observe = handler; } };
 }
 
 it("N01-foreground: actual executor invokes authority before scripted factory with authored facts", async () => {
@@ -204,7 +207,10 @@ it("N02-async: actual direct async commits exact pair before descriptor and inte
 		async decide(request) { calls++; assert.equal(spawn.mock.callCount(), 0); assert.equal(request.facts.role?.name, f.agent.name); return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; },
 	} });
 	try {
-		await f.executor.execute("async", { agent: f.agent.name, task: "Review parser", async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+		const failed = await f.executor.execute("async", { agent: f.agent.name, task: "Review parser", async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+		assert.equal(failed.isError, true);
+		assert.equal(failed.details?.runId, accepted(f)[0]?.runId);
+		assert.equal(failed.details?.toolCallId, "async");
 		assert.equal(calls, 1);
 		assert.equal(spawn.mock.callCount(), 1);
 		assert.equal(launchConfig.steps[0].model, "fixture/target:medium");
@@ -217,6 +223,12 @@ it("N02-async: actual direct async commits exact pair before descriptor and inte
 		const expected = resolveLaunchBinding({ agent: f.agent, task: "Review parser", model, thinking: "medium", systemPrompt: buildEffectiveSystemPrompt({ agent: f.agent, resolvedSkills: [], cwd: f.root }), skills: [], toolPlan: resolvePiLaunchToolPlan({ tools: f.agent.tools, model, cwd: f.root, agentName: f.agent.name }), outputMode: "inline" });
 		assert.equal(descriptor.launchContractDigest, expected.launchContractDigest);
 		assert.equal(descriptor.absoluteDeadlineAt, launchConfig.deadlineAt);
+		assert.equal(accepted(f).length, 1);
+		assert.equal(accepted(f)[0].runId, launchConfig.id);
+		assert.equal(accepted(f)[0].toolCallId, "async");
+		assert.equal(accepted(f)[0].sessionId, f.sessionId);
+		assert.equal(launchConfig.reportNativeExecutionStart, true);
+		assert.equal(starts(f).length, 0, "failed runner spawn is not native child execution");
 	} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); if (asyncDir) fs.rmSync(asyncDir, { recursive: true, force: true }); }
 });
 
@@ -263,6 +275,7 @@ for (const scenario of ["missing", "cancel", "stale", "denied", "owner-missing",
 				const result = await launch(f, async, cancel.signal);
 				assert.equal(result.isError, true, JSON.stringify(result));
 				assert.equal(mock.sessions.length, 0); assert.equal(spawn.mock.callCount(), 0);
+				assert.equal(accepted(f).length, 0); assert.equal(starts(f).length, 0);
 			} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
 		});
 	});
@@ -363,6 +376,8 @@ it("N10-recovery-native: compaction resume reuses exact pair and one owner callb
 		assert.equal(result.isError, undefined, JSON.stringify(result));
 		assert.equal(mock.sessions.length, 2);
 		assert.equal(calls, 1); assert.equal(applied, 1);
+		assert.equal(accepted(f).length, 1, "runtime recovery cannot duplicate binding notification");
+		assert.equal(starts(f).length, 1, "runtime recovery cannot start same logical leaf twice");
 		for (const session of mock.sessions) { assert.equal(session.launch.model, "fixture/target:medium"); assert.deepEqual(session.launch.storage, mock.sessions[0]?.launch.storage); }
 		assert.match(mock.sessions[1]?.task ?? "", /Continue from the current files and transcript/);
 	} finally { registration.dispose(); mock.uninstall(); }
@@ -631,4 +646,129 @@ for (const source of ["project", "runtime"] as const) it(`NAT-NAME-executor-${so
 			assert.equal(calls, 1); assert.equal(mock.sessions.length, 1);
 		} finally { registration.dispose(); }
 	});
+});
+
+const acceptedChannel = "subagent:worker-decision-accepted";
+const childStatusChannel = "subagent:child-status";
+function accepted(f: ReturnType<typeof fixture>) { return f.events.filter((event) => event.channel === acceptedChannel).map((event) => event.payload); }
+function starts(f: ReturnType<typeof fixture>) { return f.events.filter((event) => event.channel === childStatusChannel && event.payload.status === "started").map((event) => event.payload); }
+
+it("CORRELATION-leaf: immutable consumed receipt maps originating tool/session to actual leaf before execution", async () => {
+	await withForeground(async (f, mock) => {
+		let receipt!: AppliedWorkerDecision;
+		let sessionsAtAcceptance = -1;
+		const registration = owner(f, { async decide() { return selected; }, onApplied(value) { receipt = value; } });
+		f.observe((channel) => { if (channel === acceptedChannel) sessionsAtAcceptance = mock.sessions.length; });
+		try {
+			const result = await f.executor.execute("correlation-tool", { agent: f.agent.name, task: "Private task", async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+			assert.equal(result.isError, undefined, JSON.stringify(result));
+			assert.equal(accepted(f).length, 1);
+			const event = accepted(f)[0];
+			assert.equal(sessionsAtAcceptance, 0);
+			assert.equal(event.receipt, receipt);
+			assert.ok(Object.isFrozen(event)); assert.ok(Object.isFrozen(event.receipt));
+			assert.deepEqual(Object.keys(event).sort(), ["version", "sessionId", "toolCallId", "runId", "logicalLaunchId", "receipt"].sort());
+			assert.throws(() => { event.runId = "mutated"; }, TypeError);
+			assert.equal(event.version, 1); assert.equal(event.sessionId, f.sessionId); assert.equal(event.toolCallId, "correlation-tool");
+			assert.equal(event.runId, result.details?.runId); assert.equal(event.logicalLaunchId, receipt.logicalLaunchId);
+			assert.equal(event.receipt.ownerGeneration, registration.generation);
+			assert.equal(starts(f).length, 1); assert.equal(starts(f)[0].runId, event.runId);
+			assert.ok(f.events.findIndex((entry) => entry.channel === acceptedChannel) < f.events.findIndex((entry) => entry.channel === childStatusChannel));
+			assert.doesNotMatch(JSON.stringify(event), /Private task|systemPrompt|policyContext|authorization/);
+		} finally { registration.dispose(); }
+	});
+});
+
+it("CORRELATION-observer: listener failure cannot reject committed launch", async () => {
+	await withForeground(async (f, mock) => {
+		const registration = owner(f, { async decide() { return selected; } });
+		f.observe((channel) => { if (channel === acceptedChannel) throw new Error("observer failed"); });
+		try { assert.equal((await launch(f)).isError, undefined); assert.equal(mock.sessions.length, 1); assert.equal(accepted(f).length, 1); }
+		finally { registration.dispose(); }
+	});
+});
+
+for (const mode of ["create-failed", "cancel-before-turn"] as const) it(`CORRELATION-${mode}: accepted is not proof of child execution`, async () => {
+	await withForeground(async (f, mock) => {
+		const base = childSessionFactory(); const cancel = new AbortController();
+		setChildSessionFactory({ async create(input) {
+			assert.equal(accepted(f).length, 1); assert.equal(starts(f).length, 0);
+			if (mode === "create-failed") throw new Error("fixture creation failed");
+			const session = await base.create(input); cancel.abort(); return session;
+		}, dispose: () => base.dispose() });
+		const registration = owner(f, { async decide() { return selected; } });
+		try {
+			const failed = await launch(f, false, cancel.signal);
+			assert.equal(failed.isError, true); assert.equal(accepted(f).length, 1); assert.equal(starts(f).length, 0);
+			assert.equal(failed.details?.runId, accepted(f)[0].runId); assert.equal(failed.details?.toolCallId, accepted(f)[0].toolCallId);
+		}
+		finally { registration.dispose(); }
+	});
+});
+
+it("CORRELATION-session: navigation during assessment cannot reattribute acceptance", async () => {
+	await withForeground(async (f) => {
+		const registration = owner(f, { async decide() { f.ctx.sessionManager.getSessionId = () => "different-session"; return selected; } });
+		try { await launch(f); assert.equal(accepted(f).length, 1); assert.equal(accepted(f)[0].sessionId, f.sessionId); }
+		finally { registration.dispose(); }
+	});
+});
+
+it("CORRELATION-workflow: two real leaf receipts join child-status and terminal by childRunId/key, never root-to-siblings", async () => {
+	const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({ output: "alpha" }); mock.onCall({ output: "beta" });
+	const receipts: AppliedWorkerDecision[] = [];
+	const registration = owner(f, { async decide() { return selected; }, onApplied(receipt) { receipts.push(receipt); } });
+	const script = path.join(f.root, "workflow.js");
+	fs.writeFileSync(script, `await runs.all([{ key: "alpha", label: "Check alpha", agent: "${f.agent.name}", task: "Alpha" }, { key: "beta", label: "Check beta", agent: "${f.agent.name}", task: "Beta" }]);`);
+	try {
+		const launched = await f.executor.executePublic("workflow-tool", { workflow: script, async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+		assert.equal(launched.isError, undefined, JSON.stringify(launched));
+		const root = launched.details?.asyncId;
+		assert.ok(root);
+		const statusPath = path.join(launched.details!.asyncDir!, "status.json");
+		const limit = Date.now() + 5000;
+		let terminal: any;
+		while (Date.now() < limit) {
+			terminal = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+			if (terminal.state === "complete" || terminal.state === "failed") break;
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(accepted(f).length, 2); assert.equal(receipts.length, 2); assert.equal(starts(f).length, 2);
+		assert.equal(new Set(accepted(f).map((event) => event.runId)).size, 2);
+		for (const event of accepted(f)) {
+			assert.equal(event.toolCallId, "workflow-tool");
+			assert.equal(event.parentWorkflowRunId, root); assert.ok(["alpha", "beta"].includes(event.workflowKey));
+			assert.ok(receipts.includes(event.receipt)); assert.notEqual(event.runId, root);
+			const start = starts(f).filter((entry) => entry.childRunId === event.runId);
+			assert.equal(start.length, 1); assert.equal(start[0].runId, root); assert.equal(start[0].childId, event.workflowKey);
+		}
+		assert.equal(terminal.state, "complete", "persisted workflow terminal payload (fixture does not install result watcher)");
+		for (const event of accepted(f)) assert.ok(terminal.workflowChildren.children.some((child: any) => child.runId === event.runId && child.childId === event.workflowKey));
+	} finally { registration.dispose(); mock.uninstall(); }
+});
+
+for (const workflow of [false, true]) it(`CORRELATION-runner-${workflow ? "workflow" : "ordinary"}: actual direct async config emits one truthful started event and terminal result for same leaf`, async (t) => {
+	const f = fixture(); let config: any;
+	t.mock.method(childProcess, "spawn", (_cmd: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+		config = JSON.parse(fs.readFileSync(String(options.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args.at(-1)), "utf8"));
+		throw new Error("intercepted fixture spawn");
+	}); syncBuiltinESMExports();
+	const registration = owner(f, { async decide() { return selected; } });
+	try {
+		await launch(f, true, undefined, workflow ? { workflowParentRunId: "workflow-root", workflowKey: "alpha" } : {});
+		assert.ok(config); assert.equal(starts(f).length, 0);
+		t.mock.restoreAll(); syncBuiltinESMExports();
+		const mock = createMockPi(); mock.install(); mock.onCall({ output: "async leaf done" });
+		try {
+			await runSubagent(config, childSessionFactory());
+			const events = fs.readFileSync(path.join(config.asyncDir, "events.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+			const actualStarts = events.filter((event) => event.type === "subagent.child-status" && event.status === "started");
+			assert.equal(actualStarts.length, 1);
+			assert.equal(actualStarts[0].runId, workflow ? "workflow-root" : accepted(f)[0].runId);
+			assert.equal(actualStarts[0].childId, workflow ? "alpha" : "step:0");
+			if (workflow) { assert.equal(actualStarts[0].childRunId, accepted(f)[0].runId); assert.equal(actualStarts[0].workflowKey, "alpha"); }
+			const terminal = JSON.parse(fs.readFileSync(path.join(config.asyncDir, "status.json"), "utf8"));
+			assert.equal(terminal.runId, accepted(f)[0].runId); assert.equal(terminal.state, "complete");
+		} finally { mock.uninstall(); }
+	} finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
 });
