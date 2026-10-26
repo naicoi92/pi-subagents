@@ -80,6 +80,37 @@ it("NAT-COMPARISON-parent: omitted caller separates parent fast comparison from 
 	});
 });
 
+for (const model of ["inherit", " inherit ", "", "   "]) for (const hasParent of [true, false]) it(`NAT-COMPARISON-sentinel: ${JSON.stringify(model)} with ${hasParent ? "parent fast" : "missing parent"} preserves comparison provenance and separate retention`, async () => {
+	await withForeground(async (f, mock) => {
+		f.ctx.model = hasParent ? { provider: "fixture", id: "fast" } : undefined;
+		f.ctx.modelRegistry.getAvailable = () => ["fast", "deep"].map((id) => ({ provider: "fixture", id, reasoning: true, thinkingLevelMap: { low: "low", medium: "medium", high: "high" } }));
+		f.agent.model = "fixture/deep";
+		let captured!: WorkerDecisionRequest;
+		const registration = owner(f, { async decide(request) {
+			captured = request;
+			const original = request.policyContext.original;
+			return original.kind === "verified"
+				? { kind: "apply", model: original.model, thinking: original.thinking, reason: "verified-original-retained" }
+				: { kind: "reject", reason: "baseline-unresolved" };
+		} });
+		try {
+			const result = await launch(f, false, undefined, { model });
+			assert.equal(result.isError, undefined, JSON.stringify(result.content));
+			assert.deepEqual(captured.policyContext.comparison, hasParent
+				? { kind: "resolved", model: "fixture/fast", provenance: "parent" }
+				: { kind: "unresolved", reason: "model-unresolved" });
+			const original = captured.policyContext.original;
+			assert.equal(original.kind, "verified");
+			if (original.kind === "verified") {
+				assert.equal(original.model, hasParent ? "fixture/fast" : "fixture/deep");
+				assert.equal(original.thinking, "high");
+				assert.equal(original.provenance, "host-effective");
+			}
+			assert.equal(mock.sessions[0]?.launch.model, hasParent ? "fixture/fast:high" : "fixture/deep:high");
+		} finally { registration.dispose(); }
+	});
+});
+
 it("NAT-COMPARISON-caller: explicit caller model wins parent identity without thinking suffix", async () => {
 	await withForeground(async (f, mock) => {
 		f.ctx.model = { provider: "fixture", id: "target" };

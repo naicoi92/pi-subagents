@@ -7711,7 +7711,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				});
 				const originalThinking = delegatedThinkingOverride ?? nativeAgent.thinking;
 				const originalWithThinking = applyThinkingSuffix(originalModel, originalThinking, delegatedThinkingOverride !== undefined);
-				const callerModelExplicit = effectiveParams.model !== undefined;
+				const callerModelExplicit = resolveModelOrigin({ explicitModel: effectiveParams.model }) === "explicit";
 				const comparisonModel = callerModelExplicit ? originalModel : requestParentModel ? `${requestParentModel.provider}/${requestParentModel.id}` : undefined;
 				nativeWorkerDecision = await prepareNativeWorkerDecision({
 					sessionId: requestSessionId, routing: workerDecisionRouting,
