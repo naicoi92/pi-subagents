@@ -65,6 +65,29 @@ function fixture(authority?: WorkerDecisionAuthority) {
 	return { clock, sessionId, registration, input, applied };
 }
 
+it("owner cancellation is a consumed blocked decision", async () => {
+	let calls = 0;
+	let validations = 0;
+	let notifications = 0;
+	const f = fixture({ async decide() { calls++; return { kind: "reject", reason: "cancelled" }; }, onApplied() { notifications++; } });
+	f.input.host.validate = async () => { validations++; return { kind: "valid" }; };
+	try {
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "cancelled" });
+		assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), { kind: "consumed", state: "blocked" });
+		assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "cancelled" });
+		assert.equal(calls, 1);
+		assert.equal(validations, 0);
+		assert.equal(notifications, 0);
+		f.registration.dispose();
+		const replacement = registerWorkerDecisionAuthority({ sessionId: f.sessionId, lifetimeDeadline: 10000, assessmentTimeoutMs: 1000, authority: { async decide() { calls++; return decision; } } });
+		try {
+			f.input.control = { ...f.input.control, ownerGeneration: replacement.generation };
+			assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "cancelled" });
+			assert.equal(calls, 1);
+		} finally { replacement.dispose(); }
+	} finally { f.registration.dispose(); }
+});
+
 it("C01-duplicate: one originating session rejects a second owner", () => {
 	const f = fixture();
 	try {

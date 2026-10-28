@@ -60,7 +60,7 @@ export interface WorkerDecisionRequest {
 }
 export type WorkerDecision =
 	| (WorkerDecisionPair & { readonly kind: "apply"; readonly requestedThinking?: ThinkingLevel; readonly reason: WorkerDecisionReason })
-	| { readonly kind: "reject"; readonly reason: "assessment-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" | "target-unavailable" };
+	| { readonly kind: "reject"; readonly reason: "cancelled" | "assessment-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" | "target-unavailable" };
 export type WorkerDecisionTarget =
 	| (WorkerDecisionRevisions & { readonly kind: "resolved"; readonly model: string; readonly supportedThinking: readonly ThinkingLevel[]; readonly baseline: WorkerDecisionBaseline })
 	| { readonly kind: "unresolved"; readonly reason: "target-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" };
@@ -159,7 +159,7 @@ export const WORKER_DECISION_AUTHORITY_LIMITS = Object.freeze({
 });
 const RESOLUTION_RESERVE_MS = 500;
 const REASONS: readonly WorkerDecisionReason[] = ["assessed", "verified-original-retained", "verified-target-retained"];
-const OWNER_REJECTIONS = ["assessment-unavailable", "baseline-unresolved", "scope-denied", "ceiling-denied", "target-unavailable"] as const;
+const OWNER_REJECTIONS = ["cancelled", "assessment-unavailable", "baseline-unresolved", "scope-denied", "ceiling-denied", "target-unavailable"] as const;
 const defaultClock: WorkerDecisionClock = {
 	now: Date.now,
 	schedule(deadline, callback) {
