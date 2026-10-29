@@ -14,6 +14,7 @@ import { createMockPi } from "../support/mock-pi.ts";
 import * as os from "node:os";
 import { resolveLaunchBinding, stableJsonDigest } from "../../src/shared/launch-contract.ts";
 import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
+import { applySteeringRecoveryAgentConfig, readAsyncRecoveryDescriptor } from "../../src/runs/background/async-resume.ts";
 import { buildEffectiveSystemPrompt } from "../../src/runs/shared/effective-system-prompt.ts";
 import { childSessionFactory, setChildSessionFactory } from "../../src/runs/shared/child-session.ts";
 import type { AgentConfig } from "../../src/agents/agents.ts";
@@ -901,6 +902,46 @@ it("implicit defaults retain caller identities in background runner contract", a
   assert.equal(config.steps[0].tools, undefined);
   assert.deepEqual(config.steps[0].callerTools, ["plugin/tool"]);
  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
+});
+
+it("delegated async recovery preserves caller additions with pre-bridge agent configuration", async (t) => {
+ const f = fixture(); f.agent.tools = ["read"]; f.agent.excludeTools = ["excluded"];
+ let asyncDir: string | undefined;
+ t.mock.method(childProcess, "spawn", (_cmd: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+  const config = JSON.parse(fs.readFileSync(String(options.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args.at(-1)), "utf8"));
+  asyncDir = config.asyncDir;
+  throw new Error("intercepted fixture spawn");
+ }); syncBuiltinESMExports();
+ try {
+  await f.executor.executeDelegated("recovery-caller", { agent: f.agent.name, task: "Review", tools: ["grep", "excluded", "plugin/tool"], async: true, artifacts: false, acceptance: false, capabilityCeiling: { version: 1, allowedTools: ["read", "grep", "excluded"], denyExtensions: false, sources: ["test"] } }, new AbortController().signal, undefined, f.ctx as any);
+  assert.ok(asyncDir);
+  const descriptor = readAsyncRecoveryDescriptor(asyncDir)!;
+  assert.deepEqual(descriptor.tools, ["read"]);
+  assert.deepEqual(descriptor.callerTools, ["grep", "excluded", "plugin/tool"]);
+  const revived = applySteeringRecoveryAgentConfig({ ...f.agent, tools: ["bash"] }, descriptor);
+  assert.deepEqual(revived.callerTools, ["grep", "excluded", "plugin/tool"]);
+  const plan = resolvePiLaunchToolPlan({ tools: revived.tools, callerTools: revived.callerTools, excludeTools: revived.excludeTools, capabilityCeiling: descriptor.capabilityCeiling });
+  assert.deepEqual(plan.effectiveToolAllowlist, ["read", "grep"]);
+  assert.deepEqual(plan.toolExtensionPaths, []);
+ } finally { t.mock.restoreAll(); syncBuiltinESMExports(); if (asyncDir) fs.rmSync(asyncDir, { recursive: true, force: true }); }
+});
+
+it("delegated async recovery omits caller additions for absent and empty requests", async (t) => {
+ const f = fixture(); const directories: string[] = [];
+ t.mock.method(childProcess, "spawn", (_cmd: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+  const config = JSON.parse(fs.readFileSync(String(options.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args.at(-1)), "utf8"));
+  directories.push(config.asyncDir);
+  throw new Error("intercepted fixture spawn");
+ }); syncBuiltinESMExports();
+ try {
+  for (const tools of [undefined, []]) {
+   await f.executor.executeDelegated("recovery-empty", { agent: f.agent.name, task: "Review", tools, async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+   const descriptor = readAsyncRecoveryDescriptor(directories.at(-1)!)!;
+   assert.equal(descriptor.callerTools, undefined);
+   assert.equal(applySteeringRecoveryAgentConfig({ ...f.agent, callerTools: ["stale"] }, descriptor).callerTools, undefined);
+  }
+  assert.equal(directories.length, 2);
+ } finally { t.mock.restoreAll(); syncBuiltinESMExports(); for (const dir of directories) fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 it("inventory over 256 independently signals incomplete", async () => {

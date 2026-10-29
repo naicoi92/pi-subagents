@@ -92,6 +92,33 @@ describe("async recovery descriptor", () => {
 		}
 	});
 
+	it("uses only launch caller tools when recovery configuration has stale additions", (t) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-stale-caller-tools-"));
+		const directories: string[] = [];
+		t.mock.method(childProcess, "spawn", () => { throw new Error("captured detached spawn"); });
+		syncBuiltinESMExports();
+		try {
+			for (const [index, callerTools] of [undefined, []].entries()) {
+				const runId = `recovery-stale-caller-${Date.now().toString(36)}-${index}`;
+				const asyncDir = path.join(DIRS.async, runId); directories.push(asyncDir);
+				executeAsyncSingle(runId, {
+					agent: "worker", task: "Work", agentConfig: makeAgent("worker", { callerTools }),
+					recoveryAgentConfig: makeAgent("worker", { callerTools: ["stale"] }),
+					ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "recovery-stale-caller" },
+					artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+					shareEnabled: false, sessionRoot: path.join(root, "sessions"), maxSubagentDepth: 1, acceptance: false,
+				});
+				const descriptor = readAsyncRecoveryDescriptor(asyncDir)!;
+				assert.deepEqual(descriptor.callerTools, callerTools);
+				assert.deepEqual(applySteeringRecoveryAgentConfig(makeAgent("worker", { callerTools: ["stale"] }), descriptor).callerTools, callerTools);
+			}
+		} finally {
+			t.mock.restoreAll(); syncBuiltinESMExports();
+			fs.rmSync(root, { recursive: true, force: true });
+			for (const directory of directories) fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("snapshots an explicit empty descendant allowlist before detached spawn", (t) => {
 		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-recovery-allowed-agents-"));
 		const runId = `recovery-allowed-agents-${Date.now().toString(36)}`;
