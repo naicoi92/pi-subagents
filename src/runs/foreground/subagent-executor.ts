@@ -329,6 +329,8 @@ export interface SubagentParamsLike {
 	type?: string;
 	agent?: string;
 	task?: string;
+	/** Additional tools from structured delegation only. */
+	tools?: string[];
 	capabilities?: boolean;
 	extensionBindings?: ExtensionBindings;
 	/** Retained async child run id. Valid only on workflow runs.run items. */
@@ -7617,7 +7619,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				: contextPolicy.usesFork ? "fork" : undefined,
 			orchestratorTarget: sessionName,
 		});
-		const agents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
+		const scopedAgents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
+		const callerTools = delegatedExecution ? effectiveParams.tools : undefined;
+		const agents = callerTools?.length ? scopedAgents.map((agent) => agent.name === effectiveParams.agent && agent.tools !== undefined && (!agent.runner || agent.runner.type === "pi")
+			? { ...agent, tools: [...new Set([...agent.tools, ...callerTools])] } : agent) : scopedAgents;
 		const inheritedNestedRouteValue = inheritedNestedRoute(deps);
 		const nestedParentAddress = inheritedNestedRouteValue ? inheritedNestedParentAddress(deps) : undefined;
 		const shareEnabled = effectiveParams.share === true;
@@ -7756,7 +7761,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				nativeWorkerDecision = await prepareNativeWorkerDecision({
 					sessionId: requestSessionId, routing: workerDecisionRouting,
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
-					agent: nativeAgent, task: effectiveParams.task ?? "", context: contextPolicy.contextForAgent(nativeAgent.name),
+					agent: nativeAgent, task: effectiveParams.task ?? "", callerTools,
+					availableTools: deps.pi.getAllTools?.()?.slice(0, 256).map((tool) => ({ name: tool.name, description: tool.description, ...(tool.namespace?.name ? { namespace: tool.namespace.name } : {}), ...(tool.sourceInfo?.path ? { sourcePath: tool.sourceInfo.path } : {}) })), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
 					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",
 					comparison: comparisonModel

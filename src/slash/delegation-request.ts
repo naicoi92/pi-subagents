@@ -19,6 +19,7 @@ const supportedFields = new Set([
 	"context",
 	"cwd",
 	"model",
+	"tools",
 	"thinking",
 	"timeoutMs",
 	"toolBudget",
@@ -71,6 +72,7 @@ export function parseSubagentDelegationRequest(data: unknown): SubagentDelegatio
 		return { ok: false, ...identity, error: "Delegation context must be fresh or fork." };
 	}
 	if (!nonEmptyString(value.cwd)) return { ok: false, ...identity, error: "Delegation cwd must be a non-empty string." };
+	if (value.tools !== undefined && (!Array.isArray(value.tools) || value.tools.length > 256 || value.tools.some((tool) => !nonEmptyString(tool) || tool.includes("\0") || Buffer.byteLength(tool, "utf8") > MAX_SHORT_TEXT_BYTES) || value.tools.reduce((n, tool) => n + Buffer.byteLength(tool, "utf8"), 0) > 65536)) return { ok: false, ...identity, error: "tools must be a bounded array of non-empty tool names." };
 	if (value.model !== undefined && !nonEmptyString(value.model)) {
 		return { ok: false, ...identity, error: "model must be a non-empty string when provided." };
 	}
@@ -168,6 +170,7 @@ export function parseSubagentDelegationRequest(data: unknown): SubagentDelegatio
 			...value,
 			// The validated copy replaces the caller's object so the request never aliases untrusted input.
 			...(intercomBridge ? { intercomBridge } : {}),
+			...(Array.isArray(value.tools) ? { tools: [...value.tools] } : {}),
 			result: structuredSchema
 				? { kind: "structured", schema: structuredSchema }
 				: { kind: "text" },

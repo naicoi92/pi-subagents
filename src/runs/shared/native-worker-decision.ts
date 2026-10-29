@@ -6,7 +6,7 @@ import { assertThinkingWithinCeiling, type ThinkingLevel } from "../../shared/th
 import {
 	getWorkerDecisionAuthoritySnapshot, prepareWorkerDecision, WorkerDecisionAuthorityError,
 	type AppliedWorkerDecision, type WorkerDecisionAuthoritySnapshot, type WorkerDecisionBaseline,
-	type WorkerDecisionHost, type WorkerDecisionPair, type WorkerDecisionPolicyContext,
+	type WorkerDecisionHost, type WorkerDecisionPair, type WorkerDecisionPolicyContext, type WorkerToolMetadata,
 } from "../../shared/worker-decision-authority.ts";
 import { checkModelScope, type ResolvedModelScope } from "./model-scope.ts";
 
@@ -23,6 +23,8 @@ export interface NativeWorkerDecisionInput {
 	logicalLaunchId: string;
 	agent: AgentConfig;
 	task: string;
+	callerTools?: readonly string[];
+	availableTools?: readonly WorkerToolMetadata[];
 	context: "fresh" | "fork";
 	originalModel?: string;
 	originalThinking?: string | false;
@@ -100,7 +102,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 	const request = {
 		sessionId: input.sessionId,
 		control: { logicalLaunchId: input.logicalLaunchId, runtimeAttemptId: randomUUID(), ownerGeneration: routing.generation, context: input.context, launchDeadline: deadlineAt },
-		facts: { task: input.task, role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
+		facts: { task: input.task, ...(input.availableTools !== undefined ? { tools: input.availableTools } : {}), ...(input.callerTools !== undefined ? { callerTools: input.callerTools } : {}), role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
 		policyContext: { ...expected, modelContract, comparison: input.comparison, original: baseline(input.originalModel, input.originalThinking, input.originalProvenance) },
 		classifierTimeoutMs: routing.assessmentTimeoutMs, signal: input.signal, host,
 	};

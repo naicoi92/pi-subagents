@@ -728,3 +728,30 @@ it("CORE-NAME-invalid: only nonempty resolved-agent names are accepted before as
 		assert.equal(calls, 0);
 	} finally { f.registration.dispose(); }
 });
+
+it("AC2 host tool metadata and selected identities survive immutable authority commitment", async () => {
+ const metadata = [{ name: "search", description: "Search repository", namespace: "plugin", sourcePath: "/plugin/index.ts" }];
+ const selected = [{ name: "search", namespace: "plugin", sourcePath: "/plugin/index.ts" }];
+ const f = fixture({ async decide(request) {
+  assert.deepEqual(request.facts.tools, metadata);
+  assert.ok(Object.isFrozen(request.facts.tools?.[0]));
+  return { ...decision, selectedTools: selected };
+ } });
+ try {
+  f.input.facts = { ...f.input.facts, tools: metadata, callerTools: ["read"] };
+  const result = await prepareWorkerDecision(f.input);
+  assert.equal(result.kind, "committed");
+  if (result.kind !== "committed") return;
+  selected[0]!.name = "changed";
+  assert.deepEqual(result.receipt.selectedTools, [{ name: "search", namespace: "plugin", sourcePath: "/plugin/index.ts" }]);
+  assert.ok(Object.isFrozen(result.receipt.selectedTools?.[0]));
+ } finally { f.registration.dispose(); }
+});
+
+it("AC5 authority cannot select a tool with unobserved source identity", async () => {
+ const f = fixture({ async decide() { return { ...decision, selectedTools: [{ name: "search", namespace: "other" }] }; } });
+ try {
+  f.input.facts = { ...f.input.facts, tools: [{ name: "search", description: "Search", namespace: "plugin" }] };
+  assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-decision" });
+ } finally { f.registration.dispose(); }
+});

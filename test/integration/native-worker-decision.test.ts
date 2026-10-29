@@ -34,14 +34,15 @@ function fixture(modelScope?: import("../../src/runs/shared/model-scope.ts").Mod
 	const agent: AgentConfig = { name: "runtime-worker", systemPrompt: "", systemPromptMode: "replace", inheritProjectContext: false, inheritGlobalContext: false, inheritSkills: false, filePath: "", source: "runtime", model: "fixture/original", thinking: "high", description: "Reviews bounded parser correctness", definitionDigest: "runtime-definition-1" };
 	const events: Array<{ channel: string; payload: any }> = [];
 	let observe: ((channel: string, payload: any) => void) | undefined;
+	const host = { events: { on() { return () => {}; }, emit(channel: string, payload: unknown) { events.push({ channel, payload }); observe?.(channel, payload); } }, sendMessage() {}, getSessionName() {} } as any;
 	const executor = createSubagentExecutor({
-		pi: { events: { on() { return () => {}; }, emit(channel: string, payload: unknown) { events.push({ channel, payload }); observe?.(channel, payload); } }, sendMessage() {}, getSessionName() {} } as any,
+		pi: host,
 		state: { baseCwd: root, currentSessionId: null, asyncJobs: new Map(), foregroundControls: new Map(), lastForegroundControlId: null } as any,
 		config: { intercomBridge: { mode: "off" } }, asyncByDefault: false, tempArtifactsDir: root,
 		getSubagentSessionRoot: () => path.join(root, "sessions"), expandTilde: (value) => value,
 		discoverAgents: () => ({ agents: [agent], modelScope }),
 	});
-	return { root, ctx, sessionId, agent, executor, events, observe(handler: (channel: string, payload: any) => void) { observe = handler; } };
+	return { root, ctx, sessionId, agent, executor, events, host, observe(handler: (channel: string, payload: any) => void) { observe = handler; } };
 }
 
 it("N01-foreground: actual executor invokes authority before scripted factory with authored facts", async () => {
@@ -806,4 +807,40 @@ await runs.run("unstarted", { agent: "${f.agent.name}", task: "Never launched", 
 		}
 		assert.ok(!terminal.some((event) => event.workflowKey === "unstarted"));
 	} finally { registration.dispose(); mock.uninstall(); }
+});
+
+it("AC1 delegated caller tools add to explicit agent tools without replacing defaults", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"];
+  const result = await f.executor.executeDelegated("delegated", { agent: f.agent.name, task: "Review", tools: ["grep"], async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(mock.sessions[0]?.launch.tools, ["read", "grep"]);
+  assert.deepEqual(f.agent.tools, ["read"]);
+ });
+});
+
+it("AC3 exclusions block delegated caller tools", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"]; f.agent.excludeTools = ["grep"];
+  const result = await f.executor.executeDelegated("delegated-excluded", { agent: f.agent.name, task: "Review", tools: ["grep"], async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.ok(!mock.sessions[0]?.launch.tools?.includes("grep"));
+ });
+});
+
+it("AC2 native authority receives existing host metadata and separate caller provenance", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"];
+  f.host.getAllTools = () => [{ name: "grep", description: "Search files", namespace: { name: "plugin" }, sourceInfo: { path: "/plugin/index.ts" } }];
+  const registration = owner(f, { async decide(request) {
+   assert.deepEqual(request.facts.callerTools, ["grep"]);
+   assert.deepEqual(request.facts.tools, [{ name: "grep", description: "Search files", namespace: "plugin", sourcePath: "/plugin/index.ts" }]);
+   return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" };
+  } });
+  try {
+   const result = await f.executor.executeDelegated("provenance", { agent: f.agent.name, task: "Review", tools: ["grep"], async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(result.isError, undefined, JSON.stringify(result.content));
+   assert.deepEqual(mock.sessions[0]?.launch.tools, ["read", "grep"]);
+  } finally { registration.dispose(); }
+ });
 });

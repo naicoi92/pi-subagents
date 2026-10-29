@@ -24,9 +24,14 @@ export type WorkerDecisionBaseline =
 	| (WorkerDecisionPair & WorkerDecisionRevisions & { readonly kind: "verified"; readonly provenance: "host-effective" | "explicit-launch" })
 	| { readonly kind: "unresolved"; readonly reason: "model-unresolved" | "thinking-unresolved" | "provenance-unresolved" };
 
+export interface WorkerToolIdentity { readonly name: string; readonly namespace?: string; readonly sourcePath?: string }
+export interface WorkerToolMetadata extends WorkerToolIdentity { readonly description: string }
+
 /** Only this explicit factual projection is suitable for assessment; policyContext is private to the owner. */
 export interface WorkerDecisionFacts {
 	readonly task: string;
+	readonly tools?: readonly WorkerToolMetadata[];
+	readonly callerTools?: readonly string[];
 	readonly role?: {
 		/** Exact resolved definition name; only valid with resolved-agent provenance. */
 		readonly name?: string;
@@ -59,7 +64,7 @@ export interface WorkerDecisionRequest {
 	readonly policyContext: WorkerDecisionPolicyContext;
 }
 export type WorkerDecision =
-	| (WorkerDecisionPair & { readonly kind: "apply"; readonly requestedThinking?: ThinkingLevel; readonly reason: WorkerDecisionReason })
+	| (WorkerDecisionPair & { readonly kind: "apply"; readonly requestedThinking?: ThinkingLevel; readonly reason: WorkerDecisionReason; readonly selectedTools?: readonly WorkerToolIdentity[] })
 	| { readonly kind: "reject"; readonly reason: "cancelled" | "assessment-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" | "target-unavailable" };
 export type WorkerDecisionTarget =
 	| (WorkerDecisionRevisions & { readonly kind: "resolved"; readonly model: string; readonly supportedThinking: readonly ThinkingLevel[]; readonly baseline: WorkerDecisionBaseline })
@@ -77,6 +82,8 @@ export interface AppliedWorkerDecision extends WorkerDecisionPair, WorkerDecisio
 	readonly ownerGeneration: string;
 	readonly requestedThinking?: ThinkingLevel;
 	readonly reason: WorkerDecisionReason;
+	readonly selectedTools?: readonly WorkerToolIdentity[];
+	readonly callerTools?: readonly string[];
 	readonly digest: string;
 }
 export const SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT = "subagent:worker-decision-accepted";
@@ -237,12 +244,37 @@ function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecis
 	} else fail("invalid-request");
 	return { definitionRevision, constraintRevision, modelContract, comparison, original };
 }
+function snapshotToolList(value: unknown, metadata: boolean, reason: "invalid-request" | "invalid-decision"): WorkerToolMetadata[] {
+ if (!Array.isArray(value) || value.length > 256) fail(reason);
+ let bytes = 0;
+ const field = (v: unknown, required: boolean): string | undefined => {
+  if (v === undefined && !required) return undefined;
+  if (typeof v !== "string" || !v || v.includes("\0") || Buffer.byteLength(v) > 1024) fail(reason);
+  bytes += Buffer.byteLength(v); return v;
+ };
+ const result = value.map((entry) => {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) fail(reason);
+  const name = field(entry.name, true)!;
+  const namespace = field(entry.namespace, false);
+  const sourcePath = field(entry.sourcePath, false);
+  const description = metadata ? field(entry.description, true)! : "";
+  return { name, ...(namespace !== undefined ? { namespace } : {}), ...(sourcePath !== undefined ? { sourcePath } : {}), ...(metadata ? { description } : {}) } as WorkerToolMetadata;
+ });
+ if (bytes > 65536) fail(reason);
+ return result;
+}
+function snapshotCallerTools(value: unknown): string[] {
+ if (!Array.isArray(value) || value.length > 256 || value.some((v) => typeof v !== "string" || !v.trim() || v.includes("\0") || Buffer.byteLength(v) > 1024) || value.reduce((n, v) => n + Buffer.byteLength(v), 0) > 65536) fail("invalid-request");
+ return [...value];
+}
 function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionRequest {
 	const { control, facts, policyContext } = input;
 	if (!["fresh", "fork"].includes(control.context)) fail("invalid-request");
 	// Named-field projection fixes record order and excludes undeclared config/policy extras.
 	const projected: WorkerDecisionFacts = {
 		task: text(facts.task),
+		...(facts.tools !== undefined ? { tools: snapshotToolList(facts.tools, true, "invalid-request") } : {}),
+		...(facts.callerTools !== undefined ? { callerTools: snapshotCallerTools(facts.callerTools) } : {}),
 		...(facts.role !== undefined ? { role: { ...(facts.role.name !== undefined ? { name: text(facts.role.name) } : {}), description: text(facts.role.description), provenance: facts.role.provenance } } : {}),
 		...(facts.capabilities !== undefined ? { capabilities: facts.capabilities.map(({ description, provenance }) => ({ description: text(description), provenance })) } : {}),
 	};
@@ -416,14 +448,16 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 			}
 			if (!retained && (!("kind" in reply) || reply.kind !== "apply")) fail("invalid-decision");
 			if (!("model" in reply) || !("thinking" in reply) || !isPhysicalModel(reply.model) || !isThinking(reply.thinking) || !REASONS.some((reason) => reason === reply.reason) || ("requestedThinking" in reply && reply.requestedThinking !== undefined && !isThinking(reply.requestedThinking))) fail("invalid-decision");
+			const selectedTools = "selectedTools" in reply && reply.selectedTools !== undefined ? snapshotToolList(reply.selectedTools, false, "invalid-decision") : undefined;
+			if (selectedTools && selectedTools.some((tool) => !request.facts.tools?.some((candidate) => candidate.name === tool.name && candidate.namespace === tool.namespace && candidate.sourcePath === tool.sourcePath))) fail("invalid-decision");
 			const selected = Object.freeze({ model: reply.model, thinking: reply.thinking });
 			guard();
 			const validated = await input.host.validate(selected, request, { signal: controller.signal, hardDeadline });
 			check();
 			if (validated.kind !== "valid") fail(validated.reason);
 			if (retained) { guard(); return { kind: "committed", receipt: retained }; }
-			const content = { ...selected, logicalLaunchId: request.control.logicalLaunchId, ownerGeneration: owner.generation, definitionRevision: request.policyContext.definitionRevision, constraintRevision: request.policyContext.constraintRevision, reason: reply.reason as WorkerDecisionReason, ...("requestedThinking" in reply && reply.requestedThinking ? { requestedThinking: reply.requestedThinking as ThinkingLevel } : {}) };
-			const receipt: AppliedWorkerDecision = Object.freeze({ ...content, digest: digest(content) });
+			const content = { ...selected, ...(selectedTools !== undefined ? { selectedTools } : {}), ...(request.facts.callerTools !== undefined ? { callerTools: request.facts.callerTools } : {}), logicalLaunchId: request.control.logicalLaunchId, ownerGeneration: owner.generation, definitionRevision: request.policyContext.definitionRevision, constraintRevision: request.policyContext.constraintRevision, reason: reply.reason as WorkerDecisionReason, ...("requestedThinking" in reply && reply.requestedThinking ? { requestedThinking: reply.requestedThinking as ThinkingLevel } : {}) };
+			const receipt: AppliedWorkerDecision = freeze({ ...content, digest: digest(content) });
 			// No host callback, serialization or hashing between final authority fence and ledger mutation.
 			guard();
 			entry.receipt = receipt;

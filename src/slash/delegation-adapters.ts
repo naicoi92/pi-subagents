@@ -126,6 +126,7 @@ export interface PromptTemplateBridgeResult {
 export interface DelegatedSubagentExecutionParams {
 	agent?: string;
 	task?: string;
+	tools?: string[];
 	context: "fresh" | "fork";
 	model?: string;
 	cwd: string;
@@ -314,6 +315,7 @@ export function toSubagentDelegationExecutionParams(request: SubagentDelegationR
 	return {
 		agent: request.agent,
 		task: request.task,
+		...(request.tools !== undefined ? { tools: request.tools } : {}),
 		context: request.context,
 		cwd: request.cwd,
 		model: request.model,

@@ -771,3 +771,19 @@ describe("public subagent delegation contract", () => {
 		bridge.dispose();
 	});
 });
+
+it("AC1 delegation preserves additive caller tool identities in execution params", () => {
+ const parsed = parseSubagentDelegationRequest({ ...request, tools: ["search"] });
+ assert.equal(parsed.ok, true);
+ if (!parsed.ok) return;
+ assert.deepEqual(toSubagentDelegationExecutionParams(parsed.request).tools, ["search"]);
+});
+
+it("AC1 delegation rejects unbounded caller tools and copies validated identities", () => {
+ const tools = ["search"];
+ const parsed = parseSubagentDelegationRequest({ ...request, tools });
+ assert.equal(parsed.ok, true);
+ tools[0] = "changed";
+ if (parsed.ok) assert.deepEqual(parsed.request.tools, ["search"]);
+ assert.equal(parseSubagentDelegationRequest({ ...request, tools: Array(257).fill("search") }).ok, false);
+});

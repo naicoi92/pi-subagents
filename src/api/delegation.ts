@@ -31,6 +31,8 @@ export interface SubagentDelegationRequest {
 	task: string;
 	context: "fresh" | "fork";
 	cwd: string;
+	/** Additional tools; omitted or empty preserves agent defaults. */
+	tools?: string[];
 	model?: string;
 	thinking?: SubagentDelegationThinking;
 	timeoutMs?: number;

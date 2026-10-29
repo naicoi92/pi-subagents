@@ -13,6 +13,8 @@ export {
 	type PreparedWorkerDecision,
 	type PrepareWorkerDecisionInput,
 	type RegisterWorkerDecisionAuthorityInput,
+	type WorkerToolIdentity,
+	type WorkerToolMetadata,
 	type WorkerDecision,
 	type WorkerDecisionAuthority,
 	type WorkerDecisionAuthorityRegistration,
