@@ -5,7 +5,8 @@ import { syncBuiltinESMExports } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { readAsyncRecoveryDescriptor } from "../../src/runs/background/async-resume.ts";
+import { applySteeringRecoveryAgentConfig, readAsyncRecoveryDescriptor } from "../../src/runs/background/async-resume.ts";
+import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
 import { executeAsyncSingle } from "../../src/runs/background/async-execution.ts";
 import { createRunFanoutBudget } from "../../src/runs/shared/run-fanout-budget.ts";
 import { DIRS } from "../../src/shared/types.ts";
@@ -45,6 +46,45 @@ describe("async recovery descriptor", () => {
 			assert.equal(fs.existsSync(asyncDir), false);
 		} finally {
 			registration.dispose();
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+			fs.rmSync(root, { recursive: true, force: true });
+			fs.rmSync(asyncDir, { recursive: true, force: true });
+		}
+	});
+
+	it("persists caller tools through recovery without bypassing ceilings or exclusions", (t) => {
+		const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-async-caller-tools-"));
+		const runId = `recovery-caller-tools-${Date.now().toString(36)}`;
+		const asyncDir = path.join(DIRS.async, runId);
+		t.mock.method(childProcess, "spawn", () => { throw new Error("captured detached spawn"); });
+		syncBuiltinESMExports();
+		try {
+			const ceiling = { version: 1 as const, allowedTools: ["read", "grep", "excluded"], denyExtensions: false, sources: ["test"] };
+			const agent = makeAgent("worker", { tools: ["read"], callerTools: ["grep", "excluded", "plugin/tool"], excludeTools: ["excluded"] });
+			executeAsyncSingle(runId, {
+				agent: "worker", task: "Work", agentConfig: agent, capabilityCeiling: ceiling,
+				ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "recovery-caller-tools" },
+				artifactConfig: { enabled: false, includeInput: false, includeOutput: false, includeJsonl: false, includeMetadata: false, cleanupDays: 7 },
+				shareEnabled: false, sessionRoot: path.join(root, "sessions"), maxSubagentDepth: 1, acceptance: false,
+			});
+			const file = path.join(asyncDir, "recovery-descriptor.json");
+			const persisted = JSON.parse(fs.readFileSync(file, "utf8"));
+			assert.deepEqual(persisted.callerTools, agent.callerTools);
+			const descriptor = readAsyncRecoveryDescriptor(asyncDir)!;
+			const revived = applySteeringRecoveryAgentConfig(makeAgent("worker", { tools: ["bash"] }), descriptor);
+			assert.deepEqual(revived.callerTools, agent.callerTools);
+			const plan = resolvePiLaunchToolPlan({ tools: revived.tools, callerTools: revived.callerTools, excludeTools: revived.excludeTools, capabilityCeiling: descriptor.capabilityCeiling });
+			assert.deepEqual(plan.effectiveToolAllowlist, ["read", "grep"]);
+			assert.deepEqual(plan.toolExtensionPaths, []);
+			for (const invalid of ["read", [""], ["bad\0tool"], ["x".repeat(1025)], Array(257).fill("read"), Array(65).fill("x".repeat(1024))]) {
+				fs.writeFileSync(file, JSON.stringify({ ...persisted, callerTools: invalid }));
+				assert.throws(() => readAsyncRecoveryDescriptor(asyncDir), /callerTools/);
+			}
+			delete persisted.callerTools;
+			fs.writeFileSync(file, JSON.stringify(persisted));
+			assert.equal(readAsyncRecoveryDescriptor(asyncDir)?.callerTools, undefined);
+		} finally {
 			t.mock.restoreAll();
 			syncBuiltinESMExports();
 			fs.rmSync(root, { recursive: true, force: true });

@@ -1,3 +1,4 @@
+import { isBoundedCallerTools } from "./caller-tools.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { THINKING_LEVELS, type ThinkingLevel } from "./model-info.ts";
 
@@ -265,7 +266,7 @@ function snapshotToolList(value: unknown, metadata: boolean, reason: "invalid-re
  return result;
 }
 function snapshotCallerTools(value: unknown): string[] {
- if (!Array.isArray(value) || value.length > 256 || value.some((v) => typeof v !== "string" || !v.trim() || v.includes("\0") || Buffer.byteLength(v) > 1024) || value.reduce((n, v) => n + Buffer.byteLength(v), 0) > 65536) fail("invalid-request");
+ if (!isBoundedCallerTools(value)) fail("invalid-request");
  return [...value];
 }
 function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionRequest {

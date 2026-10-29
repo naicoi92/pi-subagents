@@ -2147,6 +2147,7 @@ export function executeAsyncSingle(
 		...(effectiveThinking ? { thinking: resolveEffectiveThinking(selectedModel, effectiveThinking) } : {}),
 		...(thinkingCeiling ? { thinkingCeiling } : {}),
 		...(recoveryAgentConfig.tools ? { tools: [...recoveryAgentConfig.tools] } : {}),
+		...(recoveryAgentConfig.callerTools ? { callerTools: [...recoveryAgentConfig.callerTools] } : {}),
 		...(recoveryAgentConfig.excludeTools ? { excludeTools: [...recoveryAgentConfig.excludeTools] } : {}),
 		...(recoveryAgentConfig.allowNestedSubagents !== undefined ? { allowNestedSubagents: recoveryAgentConfig.allowNestedSubagents } : {}),
 		...(recoveryAgentConfig.allowedAgents !== undefined ? { allowedAgents: [...recoveryAgentConfig.allowedAgents] } : {}),
