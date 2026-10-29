@@ -51,6 +51,7 @@ export interface RunnerSubagentStep {
 	modelVerificationRegistry?: Array<{ provider: string; id: string; fullId: string; contextWindow?: number }>;
 	modelResponseAliases?: Record<string, string[]>;
 	tools?: string[];
+	callerTools?: string[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	/** Resolved selected-agent policy for launches made by this child. */

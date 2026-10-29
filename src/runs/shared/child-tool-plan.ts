@@ -118,6 +118,7 @@ function resolveFastModeExtension(input: Pick<ResolvePiLaunchToolPlanInput, "fas
 
 export interface ResolvePiLaunchToolPlanInput {
 	tools?: string[];
+	callerTools?: string[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	extensions?: string[];
@@ -323,7 +324,7 @@ export function resolvePiLaunchToolPlan(
 					? ["read", ...requestedBuiltinTools]
 					: requestedBuiltinTools
 				).filter((tool) => !allowedToolSet || allowedToolSet.has(tool));
-	const declaredBuiltinTools = ceilingFilteredBuiltinTools;
+	const declaredBuiltinTools = [...new Set([...ceilingFilteredBuiltinTools, ...(input.callerTools ?? []).filter((tool) => !allowedToolSet || allowedToolSet.has(tool))])];
 	const excludeTools = [...new Set((input.excludeTools ?? []).map((tool) => tool.trim()).filter(Boolean))];
 	const excludedToolSet = new Set(excludeTools);
 	const effectiveDeclaredBuiltinTools = declaredBuiltinTools.filter((tool) => !excludedToolSet.has(tool));
@@ -443,10 +444,11 @@ export function resolvePiLaunchToolPlan(
 	// Host-required paths have final precedence and cannot be removed by agent defaults or overrides.
 	const extensionArgs = [...new Set([...ordinaryExtensionArgs, ...requiredExtensions.map(({ path }) => path)])];
 	const requestedToolNames =
-		input.tools !== undefined
+		input.tools !== undefined || input.callerTools?.length
 			? [
 					...new Set([
 						...requestedBuiltinTools,
+						...(input.callerTools ?? []),
 						...resolvedMcpSelections.map((selection) => selection.name),
 					]),
 				]

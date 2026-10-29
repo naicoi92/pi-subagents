@@ -407,6 +407,7 @@ async function runSingleAttempt(
 		inheritSkills: agent.inheritSkills,
 		requireReadTool: Boolean(shared.resolvedSkillNames?.length),
 		tools: agent.tools,
+		callerTools: agent.callerTools,
 		excludeTools: agent.excludeTools,
 		allowNestedSubagents: agent.allowNestedSubagents,
 		descendantAllowedAgents: agent.allowedAgents,

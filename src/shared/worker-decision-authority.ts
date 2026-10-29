@@ -31,6 +31,7 @@ export interface WorkerToolMetadata extends WorkerToolIdentity { readonly descri
 export interface WorkerDecisionFacts {
 	readonly task: string;
 	readonly tools?: readonly WorkerToolMetadata[];
+	readonly toolsIncomplete?: boolean;
 	readonly callerTools?: readonly string[];
 	readonly role?: {
 		/** Exact resolved definition name; only valid with resolved-agent provenance. */
@@ -271,8 +272,10 @@ function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionReque
 	const { control, facts, policyContext } = input;
 	if (!["fresh", "fork"].includes(control.context)) fail("invalid-request");
 	// Named-field projection fixes record order and excludes undeclared config/policy extras.
+	if (facts.toolsIncomplete !== undefined && typeof facts.toolsIncomplete !== "boolean") fail("invalid-request");
 	const projected: WorkerDecisionFacts = {
 		task: text(facts.task),
+		...(facts.toolsIncomplete !== undefined ? { toolsIncomplete: facts.toolsIncomplete } : {}),
 		...(facts.tools !== undefined ? { tools: snapshotToolList(facts.tools, true, "invalid-request") } : {}),
 		...(facts.callerTools !== undefined ? { callerTools: snapshotCallerTools(facts.callerTools) } : {}),
 		...(facts.role !== undefined ? { role: { ...(facts.role.name !== undefined ? { name: text(facts.role.name) } : {}), description: text(facts.role.description), provenance: facts.role.provenance } } : {}),

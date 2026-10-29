@@ -620,6 +620,7 @@ export function applySteeringRecoveryAgentConfig(agentConfig: AgentConfig, descr
 		thinking: descriptor.thinking,
 		maxThinking: intersectThinkingCeilings(descriptor.thinkingCeiling, agentConfig.maxThinking),
 		tools: descriptor.tools ? [...descriptor.tools] : undefined,
+		callerTools: descriptor.callerTools ? [...descriptor.callerTools] : undefined,
 		excludeTools: descriptor.excludeTools ? [...descriptor.excludeTools] : undefined,
 		allowNestedSubagents: descriptor.allowNestedSubagents,
 		allowedAgents: descriptor.allowedAgents === undefined ? undefined : [...descriptor.allowedAgents],

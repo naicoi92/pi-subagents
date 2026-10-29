@@ -80,6 +80,7 @@ export interface BuildInProcessChildLaunchInput {
 	inheritSkills: boolean;
 	requireReadTool?: boolean;
 	tools?: string[];
+	callerTools?: string[];
 	excludeTools?: string[];
 	extensions?: string[];
 	subagentOnlyExtensions?: string[];
@@ -199,6 +200,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		: input.capabilityCeiling;
 	const toolPlan = resolvePiLaunchToolPlan({
 		tools: input.tools,
+		callerTools: input.callerTools,
 		excludeTools: input.excludeTools,
 		allowNestedSubagents: input.allowNestedSubagents,
 		extensions: input.extensions,

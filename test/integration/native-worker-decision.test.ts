@@ -844,3 +844,73 @@ it("AC2 native authority receives existing host metadata and separate caller pro
   } finally { registration.dispose(); }
  });
 });
+
+it("caller identities never become extension paths", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"];
+  const result = await f.executor.executeDelegated("caller-path", { agent: f.agent.name, task: "Review", tools: ["/tmp/evil.ts", "plugin/tool"], async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.ok(!mock.sessions[0]?.launch.extensions?.includes("/tmp/evil.ts"));
+  assert.ok(mock.sessions[0]?.launch.tools?.includes("plugin/tool"));
+ });
+});
+
+it("host metadata omissions reach owner without blocking baseline launch", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"];
+  f.host.getAllTools = () => [
+   { name: "empty", description: "" }, { name: "large", description: "x".repeat(1025) },
+   ...Array.from({length: 260}, (_, i) => ({ name: `tool${i}`, description: "x".repeat(1000) })),
+  ];
+  const registration = owner(f, { async decide(request) {
+   assert.equal(request.facts.toolsIncomplete, true);
+   assert.ok(request.facts.tools!.length < 256);
+   assert.ok(request.facts.tools!.every(tool => tool.description.length > 0 && tool.description.length <= 1024));
+   return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" };
+  } });
+  try {
+   const result = await f.executor.executeDelegated("metadata-omitted", { agent: f.agent.name, task: "Review", async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(result.isError, undefined, JSON.stringify(result.content));
+   assert.ok(mock.sessions[0]);
+  } finally { registration.dispose(); }
+ });
+});
+
+it("implicit defaults keep caller additions in foreground decision contract", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = undefined;
+  const registration = owner(f, { async decide(request) {
+   assert.deepEqual(request.facts.callerTools, ["plugin/tool"]);
+   return selected;
+  } });
+  try {
+   const result = await f.executor.executeDelegated("implicit-foreground", { agent: f.agent.name, task: "Review", tools: ["plugin/tool"], async: false, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(result.isError, undefined, JSON.stringify(result.content));
+   assert.equal(mock.sessions[0]?.launch.tools, undefined);
+  } finally { registration.dispose(); }
+ });
+});
+
+it("implicit defaults retain caller identities in background runner contract", async (t) => {
+ const f = fixture(); f.agent.tools = undefined; let config: any;
+ t.mock.method(childProcess, "spawn", (_cmd: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+  config = JSON.parse(fs.readFileSync(String(options.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args.at(-1)), "utf8")); throw new Error("intercepted fixture spawn");
+ }); syncBuiltinESMExports();
+ try {
+  await f.executor.executeDelegated("implicit-background", { agent: f.agent.name, task: "Review", tools: ["plugin/tool"], async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(config.steps[0].tools, undefined);
+  assert.deepEqual(config.steps[0].callerTools, ["plugin/tool"]);
+ } finally { t.mock.restoreAll(); syncBuiltinESMExports(); if (config) fs.rmSync(config.asyncDir, { recursive: true, force: true }); }
+});
+
+it("inventory over 256 independently signals incomplete", async () => {
+ await withForeground(async (f) => {
+  f.host.getAllTools = () => Array.from({length: 257}, (_, i) => ({ name: `tool${i}`, description: "valid" }));
+  const registration = owner(f, { async decide(request) {
+   assert.equal(request.facts.toolsIncomplete, true);
+   assert.equal(request.facts.tools?.length, 256);
+   return selected;
+  } });
+  try { assert.equal((await launch(f)).isError, undefined); } finally { registration.dispose(); }
+ });
+});

@@ -1,3 +1,4 @@
+import { projectHostToolMetadata } from "../shared/native-worker-decision.ts";
 import type { SubagentAttachedForegroundCompleteEvent } from "../../shared/types.ts";
 import { issueWorkerPresentationBinding } from "../../shared/worker-presentation.ts";
 import { randomUUID } from "node:crypto";
@@ -7621,8 +7622,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		});
 		const scopedAgents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
 		const callerTools = delegatedExecution ? effectiveParams.tools : undefined;
-		const agents = callerTools?.length ? scopedAgents.map((agent) => agent.name === effectiveParams.agent && agent.tools !== undefined && (!agent.runner || agent.runner.type === "pi")
-			? { ...agent, tools: [...new Set([...agent.tools, ...callerTools])] } : agent) : scopedAgents;
+		const agents = callerTools?.length ? scopedAgents.map((agent) => agent.name === effectiveParams.agent && (!agent.runner || agent.runner.type === "pi")
+			? { ...agent, callerTools: [...callerTools] } : agent) : scopedAgents;
 		const inheritedNestedRouteValue = inheritedNestedRoute(deps);
 		const nestedParentAddress = inheritedNestedRouteValue ? inheritedNestedParentAddress(deps) : undefined;
 		const shareEnabled = effectiveParams.share === true;
@@ -7762,7 +7763,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					sessionId: requestSessionId, routing: workerDecisionRouting,
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
 					agent: nativeAgent, task: effectiveParams.task ?? "", callerTools,
-					availableTools: deps.pi.getAllTools?.()?.slice(0, 256).map((tool) => ({ name: tool.name, description: tool.description, ...(tool.namespace?.name ? { namespace: tool.namespace.name } : {}), ...(tool.sourceInfo?.path ? { sourcePath: tool.sourceInfo.path } : {}) })), context: contextPolicy.contextForAgent(nativeAgent.name),
+					...projectHostToolMetadata(deps.pi.getAllTools?.()), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
 					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",
 					comparison: comparisonModel
@@ -7796,7 +7797,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const resolvedSkills = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
 						if (resolvedSkills.missing.includes("pi-subagents")) throw new Error("Skills not found: pi-subagents");
 						resolvePiLaunchToolPlan({
-							tools: nativeAgent.tools, excludeTools: nativeAgent.excludeTools, allowNestedSubagents: nativeAgent.allowNestedSubagents,
+							tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, excludeTools: nativeAgent.excludeTools, allowNestedSubagents: nativeAgent.allowNestedSubagents,
 							extensions: nativeAgent.extensions, subagentOnlyExtensions: nativeAgent.subagentOnlyExtensions, requiredExtensions,
 							mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolvedSkills.resolved.length > 0,
 							structuredOutput: Boolean(effectiveParams.outputSchema), fast: effectiveParams.fast ?? nativeAgent.fast,

@@ -1229,6 +1229,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 		const requiredExtensions = externalRunner ? [] : mergeRequiredChildExtensions(a.requiredExtensions, params.requiredExtensions, ctx.childRuntime?.requiredExtensions, registeredExtensions);
 		const toolPlan = resolvePiLaunchToolPlan({
 			tools: a.tools,
+			callerTools: a.callerTools,
 			excludeTools: a.excludeTools,
 			allowNestedSubagents: a.allowNestedSubagents,
 			extensions: a.extensions,
@@ -1281,6 +1282,7 @@ export function buildAsyncRunnerSteps(id: string, params: AsyncRunnerStepBuildPa
 			...(availableModels && availableModels.length > 0 ? { modelVerificationRegistry: availableModels } : {}),
 			...(ctx.modelResponseAliases ? { modelResponseAliases: ctx.modelResponseAliases } : {}),
 			tools: a.tools,
+			callerTools: a.callerTools,
 			excludeTools: a.excludeTools,
 			allowNestedSubagents: a.allowNestedSubagents,
 			allowedAgents: a.allowedAgents,
@@ -2078,6 +2080,7 @@ export function executeAsyncSingle(
 	const requiredExtensions = externalRunner ? [] : mergeRequiredChildExtensions(agentConfig.requiredExtensions, params.requiredExtensions, ctx.childRuntime?.requiredExtensions, registeredExtensions);
 	const toolPlan = resolvePiLaunchToolPlan({
 		tools: agentConfig.tools,
+		callerTools: agentConfig.callerTools,
 		excludeTools: agentConfig.excludeTools,
 		allowNestedSubagents: agentConfig.allowNestedSubagents,
 		extensions: agentConfig.extensions,
@@ -2223,6 +2226,7 @@ export function executeAsyncSingle(
 						...(availableModels && availableModels.length > 0 ? { modelVerificationRegistry: availableModels } : {}),
 						...(ctx.modelResponseAliases ? { modelResponseAliases: ctx.modelResponseAliases } : {}),
 						tools: agentConfig.tools,
+						callerTools: agentConfig.callerTools,
 						excludeTools: agentConfig.excludeTools,
 						allowNestedSubagents: agentConfig.allowNestedSubagents,
 						allowedAgents: agentConfig.allowedAgents,

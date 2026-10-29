@@ -50,6 +50,7 @@ export function buildRunnerChildLaunch(step: RunnerSubagentStep, ctx: RunnerChil
 		inheritSkills: step.inheritSkills,
 		requireReadTool: Boolean(step.skills?.length),
 		tools: step.tools,
+		callerTools: step.callerTools,
 		excludeTools: step.excludeTools,
 		allowNestedSubagents: step.allowNestedSubagents,
 		descendantAllowedAgents: step.allowedAgents,

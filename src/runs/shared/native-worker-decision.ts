@@ -25,6 +25,7 @@ export interface NativeWorkerDecisionInput {
 	task: string;
 	callerTools?: readonly string[];
 	availableTools?: readonly WorkerToolMetadata[];
+	toolsIncomplete?: boolean;
 	context: "fresh" | "fork";
 	originalModel?: string;
 	originalThinking?: string | false;
@@ -102,7 +103,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 	const request = {
 		sessionId: input.sessionId,
 		control: { logicalLaunchId: input.logicalLaunchId, runtimeAttemptId: randomUUID(), ownerGeneration: routing.generation, context: input.context, launchDeadline: deadlineAt },
-		facts: { task: input.task, ...(input.availableTools !== undefined ? { tools: input.availableTools } : {}), ...(input.callerTools !== undefined ? { callerTools: input.callerTools } : {}), role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
+		facts: { task: input.task, ...(input.toolsIncomplete !== undefined ? { toolsIncomplete: input.toolsIncomplete } : {}), ...(input.availableTools !== undefined ? { tools: input.availableTools } : {}), ...(input.callerTools !== undefined ? { callerTools: input.callerTools } : {}), role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
 		policyContext: { ...expected, modelContract, comparison: input.comparison, original: baseline(input.originalModel, input.originalThinking, input.originalProvenance) },
 		classifierTimeoutMs: routing.assessmentTimeoutMs, signal: input.signal, host,
 	};
@@ -136,4 +137,21 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		},
 		async revalidate() { await prepare(); },
 	};
+}
+
+/** Omit unusable host records rather than letting inventory bounds block a launch. */
+export function projectHostToolMetadata(tools: readonly { name: string; description: string; namespace?: { name: string }; sourceInfo?: { path?: string } }[] | undefined): { availableTools?: WorkerToolMetadata[]; toolsIncomplete?: boolean } {
+ if (tools === undefined) return {};
+ const availableTools: WorkerToolMetadata[] = [];
+ let bytes = 0;
+ let incomplete = false;
+ for (const tool of tools) {
+  const fields = [tool?.name, tool?.description, tool?.namespace?.name, tool?.sourceInfo?.path];
+  if (fields.some((value, index) => value === undefined ? index < 2 : typeof value !== "string" || !value || value.includes("\0") || Buffer.byteLength(value) > 1024)) { incomplete = true; continue; }
+  const size = fields.reduce<number>((sum, value) => sum + (value === undefined ? 0 : Buffer.byteLength(value)), 0);
+  if (availableTools.length >= 256 || bytes + size > 65536) { incomplete = true; continue; }
+  bytes += size;
+  availableTools.push({ name: tool.name, description: tool.description, ...(tool.namespace?.name !== undefined ? { namespace: tool.namespace.name } : {}), ...(tool.sourceInfo?.path !== undefined ? { sourcePath: tool.sourceInfo.path } : {}) });
+ }
+ return { availableTools, toolsIncomplete: incomplete };
 }

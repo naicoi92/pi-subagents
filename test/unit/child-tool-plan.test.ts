@@ -252,3 +252,15 @@ describe("production launch path keeps declared child tools", () => {
 		}
 	});
 });
+
+it("caller identities remain separate from extension paths and obey ceiling", () => {
+ const plan = resolvePiLaunchToolPlan({ tools: ["read"], callerTools: ["/tmp/evil.ts", "plugin/tool", "denied"], capabilityCeiling: { version: 1, allowedTools: ["read", "plugin/tool"], denyExtensions: false, sources: ["test"] } });
+ assert.deepEqual(plan.toolExtensionPaths, []);
+ assert.deepEqual(plan.effectiveToolAllowlist, ["read", "plugin/tool"]);
+});
+
+it("caller identities survive planning when Pi defaults are implicit", () => {
+ const plan = resolvePiLaunchToolPlan({ callerTools: ["plugin/tool"] });
+ assert.equal(plan.explicitToolAllowlist, false);
+ assert.deepEqual(plan.effectiveToolAllowlist, ["plugin/tool"]);
+});

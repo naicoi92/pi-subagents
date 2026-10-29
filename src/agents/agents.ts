@@ -147,6 +147,8 @@ export interface AgentConfig {
 	advertise?: boolean;
 	aliases?: string[];
 	tools?: string[];
+	/** Caller tool identities, never extension paths. */
+	callerTools?: string[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	allowedAgents?: string[];

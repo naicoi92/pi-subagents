@@ -851,6 +851,7 @@ export interface SteeringRecoveryDescriptor {
 	thinking?: string;
 	thinkingCeiling?: ThinkingLevel;
 	tools?: string[];
+	callerTools?: string[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	allowedAgents?: string[];
