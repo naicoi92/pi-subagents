@@ -126,7 +126,7 @@ export interface WorkerDecisionHost {
 	getCurrentRevisions(): WorkerDecisionRevisions;
 	resolveTarget(model: string, request: WorkerDecisionRequest, context: { signal: AbortSignal; hardDeadline: number }): Promise<WorkerDecisionTarget>;
 	/** Authoritatively check exact physical ID, support, scope, ceilings, availability and launch admission. Never substitute a pair. */
-	validate(pair: WorkerDecisionPair, request: WorkerDecisionRequest, context: { signal: AbortSignal; hardDeadline: number }): Promise<{ kind: "valid" } | { kind: "blocked"; reason: "scope-denied" | "ceiling-denied" | "target-unavailable" | "unsupported-thinking" | "stale-revisions" }>;
+	validate(pair: WorkerDecisionPair, request: WorkerDecisionRequest, context: { signal: AbortSignal; hardDeadline: number; selectedTools?: readonly WorkerToolIdentity[] }): Promise<{ kind: "valid" } | { kind: "blocked"; reason: "scope-denied" | "ceiling-denied" | "target-unavailable" | "unsupported-thinking" | "stale-revisions" }>;
 }
 export interface WorkerDecisionClock {
 	now(): number;
@@ -452,11 +452,11 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 			}
 			if (!retained && (!("kind" in reply) || reply.kind !== "apply")) fail("invalid-decision");
 			if (!("model" in reply) || !("thinking" in reply) || !isPhysicalModel(reply.model) || !isThinking(reply.thinking) || !REASONS.some((reason) => reason === reply.reason) || ("requestedThinking" in reply && reply.requestedThinking !== undefined && !isThinking(reply.requestedThinking))) fail("invalid-decision");
-			const selectedTools = "selectedTools" in reply && reply.selectedTools !== undefined ? snapshotToolList(reply.selectedTools, false, "invalid-decision") : undefined;
+			const selectedTools = "selectedTools" in reply && reply.selectedTools !== undefined ? freeze(snapshotToolList(reply.selectedTools, false, "invalid-decision")) : undefined;
 			if (selectedTools && selectedTools.some((tool) => !request.facts.tools?.some((candidate) => candidate.name === tool.name && candidate.namespace === tool.namespace && candidate.sourcePath === tool.sourcePath))) fail("invalid-decision");
 			const selected = Object.freeze({ model: reply.model, thinking: reply.thinking });
 			guard();
-			const validated = await input.host.validate(selected, request, { signal: controller.signal, hardDeadline });
+			const validated = await input.host.validate(selected, request, { signal: controller.signal, hardDeadline, ...(selectedTools !== undefined ? { selectedTools } : {}) });
 			check();
 			if (validated.kind !== "valid") fail(validated.reason);
 			if (retained) { guard(); return { kind: "committed", receipt: retained }; }

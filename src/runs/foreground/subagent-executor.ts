@@ -7784,7 +7784,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							},
 						};
 					},
-					admit(pair) {
+					admit(pair, _constraints, selectedTools) {
+						const additions = selectedTools?.length ? selectedTools : undefined;
+						if (additions && effectiveAsync) throw new Error("Worker tool selection is not supported for background launches.");
+						if (additions && (effectiveParams.machine ?? nativeAgent.machine)) throw new Error("Worker tool selection is not supported for remote launches.");
 						const ceiling = launchCapabilityCeiling();
 						assertAgentAllowedByCapabilityCeiling(nativeAgent.name, ceiling);
 						const requiredExtensions = mergeRequiredChildExtensions(nativeAgent.requiredExtensions, retainedRequiredExtensions, deps.childRuntime?.requiredExtensions, resolveRequiredChildExtensions(requestPiSessionId), resolveRequiredChildExtensions(requestSessionId));
@@ -7797,7 +7800,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						const resolvedSkills = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
 						if (resolvedSkills.missing.includes("pi-subagents")) throw new Error("Skills not found: pi-subagents");
 						resolvePiLaunchToolPlan({
-							tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, excludeTools: nativeAgent.excludeTools, allowNestedSubagents: nativeAgent.allowNestedSubagents,
+							tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, workerSelectedTools: additions, excludeTools: nativeAgent.excludeTools, allowNestedSubagents: nativeAgent.allowNestedSubagents,
 							extensions: nativeAgent.extensions, subagentOnlyExtensions: nativeAgent.subagentOnlyExtensions, requiredExtensions,
 							mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolvedSkills.resolved.length > 0,
 							structuredOutput: Boolean(effectiveParams.outputSchema), fast: effectiveParams.fast ?? nativeAgent.fast,
@@ -7808,9 +7811,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (launchRule) throw new Error(launchRule);
 					},
 				});
-				if (effectiveAsync && nativeWorkerDecision.receipt.selectedTools !== undefined) throw new Error("Worker tool selection is not supported for background launches.");
-				if ((effectiveParams.machine ?? nativeAgent.machine) && nativeWorkerDecision.receipt.selectedTools !== undefined) throw new Error("Worker tool selection is not supported for remote launches.");
-				if (!effectiveAsync && nativeWorkerDecision.receipt.selectedTools !== undefined) {
+				if (nativeWorkerDecision.receipt.selectedTools?.length) {
 					agents[agents.indexOf(nativeAgent)] = { ...nativeAgent, workerSelectedTools: nativeWorkerDecision.receipt.selectedTools };
 				}
 				effectiveParams = { ...effectiveParams, model: nativeWorkerDecision.receipt.model, modelOrigin: "explicit" };

@@ -342,7 +342,8 @@ export function resolvePiLaunchToolPlan(
 		if (baseline.some((name) => name === "codemode" || name === "models" || name.includes("*") || name.startsWith("+") || name.startsWith("-"))) throw new Error("Worker tool selection cannot preserve codemode, models, modifiers, or wildcard baseline on this supported path.");
 		for (const identity of input.workerSelectedTools) {
 			const { name, sourcePath } = identity;
-			if ((allowedToolSet && !allowedToolSet.has(name)) || matchesExclusion(name)) continue;
+			if (allowedToolSet && !allowedToolSet.has(name)) { workerToolWarnings.push(`Selected tool '${name}' blocked by capability ceiling; omitted.`); continue; }
+			if (matchesExclusion(name)) { workerToolWarnings.push(`Selected tool '${name}' blocked by exclusion; omitted.`); continue; }
 			if (baseline.includes(name)) { workerToolWarnings.push(`Selected tool '${name}' overlaps the baseline; optional source grant omitted.`); continue; }
 			if (name.startsWith("+") || name.startsWith("-") || name.includes("*") || name === "codemode" || name === "models" || name.startsWith("mcp__") || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name) || capabilityCeiling?.denyExtensions || !sourcePath || !path.isAbsolute(sourcePath)) {
 				workerToolWarnings.push(`Selected tool '${name}' has no supported file-backed grant; omitted.`);

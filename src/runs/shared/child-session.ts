@@ -702,9 +702,14 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				mcpWaits.set(cancel, ready);
 				try { await ready; } finally { mcpWaits.delete(cancel); }
 			}
+			let firstPrompt = true;
 			const child: ChildSession = {
 				subscribe: (listener) => session.subscribe((event) => listener(event as unknown as ChildSessionEvent)),
-				prompt: (text) => session.prompt(workerWarnings.length ? `${text}\n\nTool selection warnings:\n${workerWarnings.map((warning) => `- ${warning}`).join("\n")}` : text),
+				prompt: (text) => {
+					const warnings = firstPrompt && workerWarnings.length ? `Tool selection warnings:\n${workerWarnings.map((warning) => `- ${warning}`).join("\n")}\n\n` : "";
+					firstPrompt = false;
+					return session.prompt(`${warnings}${text}`);
+				},
 				workerToolWarnings: workerWarnings,
 				...(commands ? { finishCommands: () => commands.finish() } : {}),
 				steer: async (text) => { await session.steer(text); },

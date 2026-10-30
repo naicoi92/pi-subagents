@@ -6,7 +6,7 @@ import { assertThinkingWithinCeiling, type ThinkingLevel } from "../../shared/th
 import {
 	getWorkerDecisionAuthoritySnapshot, prepareWorkerDecision, WorkerDecisionAuthorityError,
 	type AppliedWorkerDecision, type WorkerDecisionAuthoritySnapshot, type WorkerDecisionBaseline,
-	type WorkerDecisionHost, type WorkerDecisionPair, type WorkerDecisionPolicyContext, type WorkerToolMetadata,
+	type WorkerDecisionHost, type WorkerDecisionPair, type WorkerDecisionPolicyContext, type WorkerToolMetadata, type WorkerToolIdentity,
 } from "../../shared/worker-decision-authority.ts";
 import { checkModelScope, type ResolvedModelScope } from "./model-scope.ts";
 
@@ -35,7 +35,7 @@ export interface NativeWorkerDecisionInput {
 	signal: AbortSignal;
 	getConstraints(): NativeWorkerConstraints;
 	/** Trusted executor admission only: no child creation, classification or pair substitution. */
-	admit(pair: WorkerDecisionPair, constraints: NativeWorkerConstraints): void;
+	admit(pair: WorkerDecisionPair, constraints: NativeWorkerConstraints, selectedTools?: readonly WorkerToolIdentity[]): void;
 	/** Only an explicit trusted contract is fixed; a configured agent.model is not a lock. */
 	modelContract?: WorkerDecisionPolicyContext["modelContract"];
 }
@@ -75,7 +75,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		// Unknown SDK/generic levels are not authoritative target evidence.
 		return THINKING_LEVELS.filter((level) => found.thinkingLevelMap?.[level] !== undefined && found.thinkingLevelMap[level] !== null);
 	};
-	const validatePair = (pair: WorkerDecisionPair): Awaited<ReturnType<WorkerDecisionHost["validate"]>> => {
+	const validatePair = (pair: WorkerDecisionPair, selectedTools?: readonly WorkerToolIdentity[]): Awaited<ReturnType<WorkerDecisionHost["validate"]>> => {
 		const constraints = input.getConstraints();
 		if (modelContract.kind === "fixed" ? pair.model !== modelContract.model : !modelContract.models.includes(pair.model)) return { kind: "blocked", reason: "scope-denied" };
 		if (constraints.modelScopes.some((scope) => checkModelScope(pair.model, scope, "explicit")?.severity === "error")) return { kind: "blocked", reason: "scope-denied" };
@@ -83,13 +83,13 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		if (!support(pair.model, constraints).includes(pair.thinking)) return { kind: "blocked", reason: "unsupported-thinking" };
 		try { assertThinkingWithinCeiling({ model: `${pair.model}:${pair.thinking}`, ceiling: constraints.thinkingCeiling }); }
 		catch { return { kind: "blocked", reason: "ceiling-denied" }; }
-		try { input.admit(pair, constraints); }
+		try { input.admit(pair, constraints, selectedTools); }
 		catch { return { kind: "blocked", reason: "scope-denied" }; }
 		return { kind: "valid" };
 	};
 	const host: WorkerDecisionHost = {
 		getCurrentRevisions: revisions,
-		async validate(pair) { return validatePair(pair); },
+		async validate(pair, _request, context) { return validatePair(pair, context.selectedTools); },
 		async resolveTarget(model) {
 			const constraints = input.getConstraints();
 			const levels = support(model, constraints);
@@ -130,7 +130,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		receipt, deadlineAt, assertCurrent,
 		assertAdmissible() {
 			assertCurrent();
-			const validation = validatePair(receipt);
+			const validation = validatePair(receipt, receipt.selectedTools);
 			// Admission loads external policy; its callbacks cannot invalidate authority then launch.
 			assertCurrent();
 			if (validation.kind === "blocked") throw new WorkerDecisionAuthorityError(validation.reason);

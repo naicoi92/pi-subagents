@@ -992,15 +992,16 @@ for (const mode of ["ceiling", "excluded", "missing", "mismatch", "implicit", "m
  f.host.getAllTools = () => [{name:"plugin_selected",description:"Selected",sourceInfo:{path:expectedSource}}];
  const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!, "dist/index.js"));
  const { createDefaultChildSessionFactory } = await import("../../src/runs/shared/child-session.ts");
- let actual: any, childPrompt = "", createdCount = 0;
+ let actual: any, childPrompt = "", followUpPrompt = "", createdCount = 0;
  const real = createDefaultChildSessionFactory({loadPiCodingAgent: async () => ({...host, createAgentSession: async (options: any) => { const created = await host.createAgentSession(options); actual = created.session; return created; }}) as any});
  const fake = childSessionFactory();
  setChildSessionFactory({async create(input) {
   createdCount++;
   const child = await real.create({...input, model:undefined,parentProviderRegistry:undefined,storage:{kind:"memory"}});
   assert.deepEqual(actual.getCallableToolNames(), ["read"]);
-  actual.prompt = async (text: string) => {childPrompt = text;};
+  actual.prompt = async (text: string) => {if (!childPrompt) childPrompt = text; else followUpPrompt = text;};
   await child.prompt("Task: Review");
+  await child.prompt("Structured output follow-up");
   const warnings = child.workerToolWarnings;
   await child.dispose(); const scripted = await fake.create(input);
   return {...scripted,workerToolWarnings:warnings};
@@ -1008,11 +1009,62 @@ for (const mode of ["ceiling", "excluded", "missing", "mismatch", "implicit", "m
  const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"plugin_selected",sourcePath:expectedSource}]} as WorkerDecision;}});
  try {
   const result = await f.executor.executeDelegated(`actual-${mode}`, {agent:f.agent.name,task:"Review",async:false,artifacts:false,acceptance:false,...(mode === "ceiling" ? {capabilityCeiling:{version:1,allowedTools:["read"],denyExtensions:false,sources:["test"]}} : {})}, new AbortController().signal, undefined, f.ctx as any);
-  if (mode === "implicit" || mode === "mcp") { assert.equal(result.isError,true); assert.match(JSON.stringify(result.content), mode === "implicit" ? /explicit agent tool list/ : /MCP or MCP resource baseline/); assert.equal(createdCount,0); }
+  if (mode === "implicit" || mode === "mcp") { assert.equal(result.isError,true); assert.match(JSON.stringify(result.content), /scope-denied/); assert.equal(createdCount,0); }
   else {
    assert.equal(result.isError,undefined,JSON.stringify(result.content));
-   if (mode === "ceiling" || mode === "excluded") assert.doesNotMatch(childPrompt,/Tool selection warnings/);
-   else { assert.match(childPrompt,/missing or source mismatch/); assert.match(JSON.stringify(result.content),/missing or source mismatch/); }
+   assert.match(childPrompt,/^Tool selection warnings:/); assert.match(childPrompt,/\n\nTask: Review$/);
+   assert.equal(followUpPrompt,"Structured output follow-up");
+   assert.match(JSON.stringify(result.content), mode === "ceiling" || mode === "excluded" ? /ceiling|exclusion/ : /missing or source mismatch/);
   }
+ } finally {registration.dispose();mock.uninstall();}
+});
+
+for (const mode of ["implicit", "mcp", "async"] as const) it(`empty worker tool decision preserves ${mode} baseline and receipt`, async (t) => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
+ f.agent.tools = mode === "mcp" ? ["read", "mcp__server__tool"] : undefined;
+ let receipt: AppliedWorkerDecision | undefined; let spawned = false;
+ if (mode === "async") { t.mock.method(childProcess, "spawn", () => { spawned = true; throw new Error("fixture spawn"); }); syncBuiltinESMExports(); }
+ const registration = owner(f,{async decide(){return {...selected,selectedTools:[]} as WorkerDecision;},onApplied(value){receipt=value;}});
+ try {
+  const result = await launch(f, mode === "async");
+  assert.deepEqual(receipt?.selectedTools, []);
+  if (mode === "async") assert.equal(spawned,true);
+  else { assert.equal(result.isError,undefined,JSON.stringify(result.content)); assert.equal(mock.sessions.length,1); assert.equal(mock.sessions[0]?.launch.workerSelectedTools,undefined); }
+ } finally {registration.dispose();mock.uninstall();t.mock.restoreAll();syncBuiltinESMExports();}
+});
+
+for (const mode of ["implicit", "mcp", "async", "remote"] as const) it(`nonempty worker selection rejects ${mode} before receipt`, async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
+ f.agent.tools = mode === "implicit" ? undefined : mode === "mcp" ? ["read","mcp__x__y"] : ["read"];
+ const source = path.join(f.root,"selected.mjs"); f.host.getAllTools = () => [{name:"selected",description:"Selected",sourceInfo:{path:source}}];
+ let applied = 0;
+ const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"selected",sourcePath:source}]} as WorkerDecision;},onApplied(){applied++;}});
+ try {
+  const result = await launch(f, mode === "async", undefined, mode === "remote" ? {machine:"fixture"} : {});
+  assert.equal(result.isError,true); assert.equal(applied,0); assert.equal(mock.sessions.length,0);
+  assert.equal(f.events.filter((event) => event.channel === "subagent:worker-decision-accepted").length,0);
+ } finally {registration.dispose();mock.uninstall();}
+});
+
+for (const mode of ["missing-callable-api", "extra-callable"] as const) it(`actual child fails closed on ${mode}`, {skip: !process.env.PI_SUBAGENTS_NATIVE_PI_ROOT && "requires Pi 1.4.0 host"}, async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
+ const source = path.join(f.root,"selected.mjs");
+ fs.writeFileSync(source, `export default pi => pi.registerTool({name:'plugin_selected',label:'Selected',description:'Selected',parameters:{type:'object',properties:{}},async execute(){return {content:[{type:'text',text:'ok'}],details:{}}}});`);
+ f.agent.tools = ["read"]; f.host.getAllTools = () => [{name:"plugin_selected",description:"Selected",sourceInfo:{path:source}}];
+ const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!,"dist/index.js"));
+ const {createDefaultChildSessionFactory} = await import("../../src/runs/shared/child-session.ts");
+ let disposed = false;
+ const real = createDefaultChildSessionFactory({loadPiCodingAgent:async()=>({...host,createAgentSession:async(options:any)=>{
+  const result = await host.createAgentSession(options); const session = result.session; const dispose = session.dispose.bind(session);
+  session.dispose = () => {disposed = true; return dispose();};
+  if (mode === "missing-callable-api") session.getCallableToolNames = undefined;
+  else { const callable = session.getCallableToolNames.bind(session); session.getCallableToolNames = () => [...callable(),"ungranted"]; }
+  return result;
+ }}) as any});
+ setChildSessionFactory({create:(input)=>real.create({...input,model:undefined,parentProviderRegistry:undefined,storage:{kind:"memory"}}),dispose:()=>real.dispose()});
+ const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"plugin_selected",sourcePath:source}]} as WorkerDecision;}});
+ try {
+  const result = await f.executor.executeDelegated(`registry-${mode}`,{agent:f.agent.name,task:"Review",async:false,artifacts:false,acceptance:false},new AbortController().signal,undefined,f.ctx as any);
+  assert.equal(result.isError,true); assert.match(JSON.stringify(result.content), mode === "missing-callable-api" ? /callable registry verification/ : /cannot enforce callable ceiling.*ungranted/); assert.equal(disposed,true);
  } finally {registration.dispose();mock.uninstall();}
 });

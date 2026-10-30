@@ -755,3 +755,21 @@ it("AC5 authority cannot select a tool with unobserved source identity", async (
   assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-decision" });
  } finally { f.registration.dispose(); }
 });
+
+it("host admission receives immutable selected identities before commitment and can reject", async () => {
+ let applied = 0;
+ const selection = [{name: "search", sourcePath: "/plugin/index.ts"}];
+ const f = fixture({async decide() { return {...decision, selectedTools: selection}; }, onApplied() { applied++; }});
+ f.input.facts = {...f.input.facts, tools: [{...selection[0]!, description: "Search"}]};
+ f.input.host.validate = async (_pair, _request, context) => {
+  assert.deepEqual(context.selectedTools, selection);
+  assert.ok(Object.isFrozen(context.selectedTools));
+  assert.ok(Object.isFrozen(context.selectedTools?.[0]));
+  return {kind: "blocked", reason: "scope-denied"};
+ };
+ try {
+  assert.deepEqual(await prepareWorkerDecision(f.input), {kind: "blocked", reason: "scope-denied"});
+  assert.equal(applied, 0);
+  assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), {kind:"consumed", state:"blocked"});
+ } finally {f.registration.dispose();}
+});
