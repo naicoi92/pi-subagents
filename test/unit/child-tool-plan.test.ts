@@ -12,7 +12,7 @@ it("recognizes only supported worker tool baselines", () => {
   [{ tools: ["read"] }, true], [{}, false], [{ tools: ["+x"] }, false],
   [{ tools: ["-x"] }, false], [{ tools: ["*"] }, false], [{ tools: ["./plugin.ts"] }, false],
   [{ tools: ["mcp__server__tool"] }, false], [{ tools: ["list_mcp_resources"] }, false],
-  [{ tools: ["models"] }, false], [{ tools: ["read"], callerTools: ["codemode"] }, false],
+  [{ tools: ["models"] }, false], [{ tools: ["codemode"] }, false], [{ tools: ["read"], callerTools: ["codemode"] }, false], [{ tools: ["read"], callerTools: ["models"] }, false],
   [{ tools: ["read"], mcpDirectTools: ["server"] }, false],
  ];
  for (const [input, expected] of cases) assert.equal(supportsWorkerToolSelection(input), expected, JSON.stringify(input));

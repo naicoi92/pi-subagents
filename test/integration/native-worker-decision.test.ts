@@ -58,7 +58,7 @@ it("reports supported tool selection for an explicit foreground agent", async ()
  });
 });
 
-for (const baseline of [undefined, ["mcp__server__tool"], ["codemode"]] as const) {
+for (const baseline of [undefined, ["mcp__server__tool"], ["codemode"], ["models"]] as const) {
  it(`reports unsupported tool selection for baseline ${JSON.stringify(baseline)}`, async () => {
   await withForeground(async (f) => {
    f.agent.tools = baseline ? [...baseline] : undefined;
@@ -1182,9 +1182,9 @@ for (const mode of ["implicit", "mcp", "async"] as const) it(`empty worker tool 
  } finally {registration.dispose();mock.uninstall();t.mock.restoreAll();syncBuiltinESMExports();}
 });
 
-for (const mode of ["implicit", "mcp", "async", "remote"] as const) it(`nonempty worker selection rejects ${mode} before receipt`, async () => {
+for (const mode of ["implicit", "mcp", "codemode", "models", "async", "remote"] as const) it(`nonempty worker selection rejects ${mode} before receipt`, async () => {
  const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
- f.agent.tools = mode === "implicit" ? undefined : mode === "mcp" ? ["read","mcp__x__y"] : ["read"];
+ f.agent.tools = mode === "implicit" ? undefined : mode === "mcp" ? ["read","mcp__x__y"] : mode === "codemode" || mode === "models" ? ["read", mode] : ["read"];
  const source = path.join(f.root,"selected.mjs"); f.host.getAllTools = () => [{name:"selected",description:"Selected",sourceInfo:{path:source}}];
  let applied = 0;
  const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"selected",sourcePath:source}]} as WorkerDecision;},onApplied(){applied++;}});
