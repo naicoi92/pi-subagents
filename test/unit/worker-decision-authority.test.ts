@@ -72,6 +72,16 @@ it("rejects an invalid tool selection capability fact", async () => {
  finally { f.registration.dispose(); }
 });
 
+it("binds tool selection capability into the logical launch identity", async () => {
+ const f = fixture();
+ f.input.facts = { ...f.input.facts, toolSelection: "supported" };
+ try {
+  assert.equal((await prepareWorkerDecision(f.input)).kind, "committed");
+  f.input.facts = { ...f.input.facts, toolSelection: "unsupported" };
+  assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "identity-conflict" });
+ } finally { f.registration.dispose(); }
+});
+
 it("owner cancellation is a consumed blocked decision", async () => {
 	let calls = 0;
 	let validations = 0;

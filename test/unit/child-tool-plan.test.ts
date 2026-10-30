@@ -3,9 +3,20 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
-import { resolvePiLaunchToolPlan } from "../../src/runs/shared/child-tool-plan.ts";
+import { resolvePiLaunchToolPlan, supportsWorkerToolSelection } from "../../src/runs/shared/child-tool-plan.ts";
 import { buildInProcessChildLaunch } from "../../src/runs/shared/child-launch.ts";
 import { MCP_RUNTIME_SNAPSHOT_EVENT, MCP_RUNTIME_SNAPSHOT_VERSION, type McpHostToolInfo, type McpRuntimeSnapshotHost } from "../../src/runs/shared/mcp-direct-tool-allowlist.ts";
+
+it("recognizes only supported worker tool baselines", () => {
+ const cases: Array<[Parameters<typeof supportsWorkerToolSelection>[0], boolean]> = [
+  [{ tools: ["read"] }, true], [{}, false], [{ tools: ["+x"] }, false],
+  [{ tools: ["-x"] }, false], [{ tools: ["*"] }, false], [{ tools: ["./plugin.ts"] }, false],
+  [{ tools: ["mcp__server__tool"] }, false], [{ tools: ["list_mcp_resources"] }, false],
+  [{ tools: ["models"] }, false], [{ tools: ["read"], callerTools: ["codemode"] }, false],
+  [{ tools: ["read"], mcpDirectTools: ["server"] }, false],
+ ];
+ for (const [input, expected] of cases) assert.equal(supportsWorkerToolSelection(input), expected, JSON.stringify(input));
+});
 
 /** A parent whose pi-mcp-adapter answers snapshot requests for one runtime-only server. */
 function runtimeSnapshotHost(serverName: string): McpRuntimeSnapshotHost {

@@ -7770,7 +7770,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 							const resolved = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
 							resolvePiLaunchToolPlan({ tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, workerSelectedTools: [], excludeTools: nativeAgent.excludeTools, mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolved.resolved.length > 0, structuredOutput: Boolean(effectiveParams.outputSchema), capabilityCeiling: launchCapabilityCeiling(), agentName: nativeAgent.name, runtimeSnapshotHost: deps.pi });
 							return "supported";
-						} catch { return "unsupported"; }
+						} catch {
+							// A failed probe cannot establish grant support; admission still checks the actual launch.
+							return "unsupported";
+						}
 					})(),
 					...projectHostToolMetadata(deps.pi.getAllTools?.()), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
