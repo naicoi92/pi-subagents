@@ -79,6 +79,22 @@ describe("public subagent execution normalization", () => {
 		);
 	});
 
+	it("AC1 accepts bounded caller tools for a single child", () => {
+		const input = {agent:"worker",task:"Review",tools:["grep"]};
+		assert.deepEqual(normalizePublicSubagentExecution(input), {ok:true, params:{...input,output:true}});
+	});
+	it("AC3 rejects malformed caller tools and tools on non-child operations", () => {
+		for (const tools of ["grep", [""], ["x".repeat(1025)], Array(257).fill("read"), Array(65).fill("x".repeat(1024))]) assert.equal(normalizePublicSubagentExecution({agent:"worker", tools}).ok,false);
+		for (const input of [{workflow:true,tools:["read"]},{action:"list",tools:["read"]},{tools:["read"]}]) assert.equal(normalizePublicSubagentExecution(input).ok,false);
+	});
+
+	it("AC3 rejects caller tool patterns and extension paths", () => {
+		for (const tool of ["*", "g*", "+read", "-read", "plugin/tool", "plugin.ts", "mcp__server__tool"]) {
+			const result = normalizePublicSubagentExecution({agent:"worker", tools:[tool]});
+			assert.equal(result.ok, false, tool);
+		}
+	});
+
 	it("rejects unsafe base refs at the public boundary", () => {
 		for (const baseRef of ["refs/heads/unsafe..ref", "branch name", "HEAD^{tree}", "@", "a".repeat(40), "a".repeat(64), 42]) {
 			const result = normalizePublicSubagentExecution({ agent: "worker", baseRef });

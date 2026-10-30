@@ -1,4 +1,5 @@
 import { normalizeWorktreeBaseRef } from "../runs/shared/worktree.ts";
+import { isBoundedCallerTools } from "../shared/caller-tools.ts";
 
 export interface PublicSubagentExecutionParams {
 	action?: unknown;
@@ -8,6 +9,7 @@ export interface PublicSubagentExecutionParams {
 	planId?: unknown;
 	agent?: unknown;
 	task?: unknown;
+	tools?: unknown;
 	handoffPath?: unknown;
 	laneId?: unknown;
 	merge?: unknown;
@@ -87,6 +89,8 @@ export function validateWorkflowCapacityOverrides(params: PublicSubagentExecutio
  * Internal runs.run children and structured owned delegation bypass this boundary.
  */
 export function normalizePublicSubagentExecution<T extends PublicSubagentExecutionParams>(params: T, options: { structuredWorkflows?: boolean } = {}): PublicSubagentExecutionNormalization<T> {
+	if (params.tools !== undefined && (!isBoundedCallerTools(params.tools) || params.tools.some((tool) => !/^[A-Za-z0-9_][A-Za-z0-9_.:-]*$/u.test(tool) || /\.(?:ts|js)$/iu.test(tool) || tool.startsWith("mcp__")))) return { ok: false, error: "tools must contain bounded literal tool names, not selectors or extension paths.", mode: params.action === undefined ? "workflow" : "management" };
+	if (params.tools !== undefined && (params.action !== undefined || params.workflow !== undefined || params.workflowScript !== undefined || params.tasks !== undefined || params.chain !== undefined || typeof params.agent !== "string")) return { ok: false, error: "tools is supported only for a single native child launch.", mode: params.action === undefined ? "workflow" : "management" };
 	for (const field of ["resource", "resourceProvenance", "workflowResource", "workflowResourceProvenance", "workflowResourcePermit", "resourcePermit", "permit"] as const) {
 		if (Object.hasOwn(params, field) && (params as Record<string, unknown>)[field] !== undefined) {
 			return { ok: false, error: "Public execution does not accept workflow resource provenance or permit fields.", mode: params.action === undefined ? "workflow" : "management" };

@@ -357,7 +357,7 @@ export function resolvePiLaunchToolPlan(
 			workerSelectedTools.push(identity);
 		}
 	}
-	const effectiveDeclaredBuiltinTools = declaredBuiltinTools.filter((tool) => input.workerSelectedTools !== undefined ? !matchesExclusion(tool) : !excludedToolSet.has(tool));
+	const effectiveDeclaredBuiltinTools = declaredBuiltinTools.filter((tool) => input.workerSelectedTools !== undefined || (input.callerTools ?? []).includes(tool) ? !matchesExclusion(tool) : !excludedToolSet.has(tool));
 	if (input.workerSelectedTools !== undefined && input.requireReadTool && !effectiveDeclaredBuiltinTools.includes("read")) effectiveDeclaredBuiltinTools.push("read");
 	const fanoutAuthorized = effectiveDeclaredBuiltinTools.includes("subagent") || (
 		input.allowNestedSubagents === true &&

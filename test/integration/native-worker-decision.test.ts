@@ -941,6 +941,69 @@ it("AC1 delegated caller tools add to explicit agent tools without replacing def
  });
 });
 
+it("AC1 public model launch combines caller tools with agent defaults", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"];
+  const registration = owner(f, {async decide(request) {
+   assert.deepEqual(request.facts.callerTools, ["grep"]);
+   return selected;
+  }});
+  try {
+   const result = await f.executor.executePublic("public-tools", {agent:f.agent.name,task:"Review",tools:["grep"],async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(result.isError, undefined, JSON.stringify(result.content));
+   assert.deepEqual(mock.sessions[0]?.launch.tools, ["read", "grep"]);
+  } finally {registration.dispose();}
+ });
+});
+
+it("AC3 public caller tools cannot independently grant nested delegation", async () => {
+ for (const tool of ["subagent", "subagent_supervisor", "subagent_command"]) {
+  await withForeground(async (f, mock) => {
+   f.agent.tools = ["read"]; f.agent.allowNestedSubagents = false;
+   const result = await f.executor.executePublic(`deny-${tool}`, {agent:f.agent.name,task:"Review",tools:[tool],async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(result.isError, true, tool);
+   assert.match(JSON.stringify(result.content), /nested delegation/);
+   assert.equal(mock.sessions.length, 0);
+  });
+ }
+});
+
+it("AC1 public native caller tools are rejected for external runners", async () => {
+ const f = fixture();
+ f.agent.tools = ["read"]; f.agent.runner = {type:"external-cli", command:process.execPath, args:[]};
+ const result = await f.executor.executePublic("external-caller", {agent:f.agent.name,task:"Review",tools:["grep"],async:true,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+ assert.equal(result.isError,true);
+ assert.match(JSON.stringify(result.content), /cannot accept native caller tools/);
+});
+
+it("AC1 implicit agent defaults cannot silently drop public caller tools", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = undefined;
+  const result = await f.executor.executePublic("implicit-public", {agent:f.agent.name,task:"Review",tools:["grep"],async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError,true);
+  assert.match(JSON.stringify(result.content), /explicit agent tools baseline/);
+  assert.equal(mock.sessions.length,0);
+ });
+});
+
+it("AC3 public caller tools cannot bypass capability ceilings", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"];
+  const result = await f.executor.executePublic("public-ceiling", {agent:f.agent.name,task:"Review",tools:["grep"],async:false,artifacts:false,acceptance:false,capabilityCeiling:{version:1,allowedTools:["read"],sources:["test"]}}, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.ok(!mock.sessions[0]?.launch.tools?.includes("grep"));
+ });
+});
+
+it("AC3 public caller tools cannot bypass wildcard exclusions", async () => {
+ await withForeground(async (f, mock) => {
+  f.agent.tools = ["read"]; f.agent.excludeTools = ["gr*"];
+  const result = await f.executor.executePublic("public-excluded", {agent:f.agent.name,task:"Review",tools:["grep"],async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.ok(!mock.sessions[0]?.launch.tools?.includes("grep"));
+ });
+});
+
 it("AC3 exclusions block delegated caller tools", async () => {
  await withForeground(async (f, mock) => {
   f.agent.tools = ["read"]; f.agent.excludeTools = ["grep"];

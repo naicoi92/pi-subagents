@@ -330,7 +330,7 @@ export interface SubagentParamsLike {
 	type?: string;
 	agent?: string;
 	task?: string;
-	/** Additional tools from structured delegation only. */
+	/** Additional tools from single-child public or structured delegation. */
 	tools?: string[];
 	capabilities?: boolean;
 	extensionBindings?: ExtensionBindings;
@@ -7621,7 +7621,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			orchestratorTarget: sessionName,
 		});
 		const scopedAgents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
-		const callerTools = delegatedExecution ? effectiveParams.tools : undefined;
+		const callerTools = delegatedExecution || publicExecution ? effectiveParams.tools : undefined;
 		const agents = scopedAgents.map((agent) => agent.name === effectiveParams.agent && (!agent.runner || agent.runner.type === "pi") && (callerTools?.length || agent.callerTools !== undefined || agent.workerSelectedTools !== undefined || agent.workerToolWarnings !== undefined)
 			? { ...agent, callerTools: callerTools?.length ? [...callerTools] : undefined, workerSelectedTools: undefined, workerToolWarnings: undefined } : agent);
 		const inheritedNestedRouteValue = inheritedNestedRoute(deps);
@@ -7709,7 +7709,10 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 				: (effectiveParams.chain ?? []).flatMap((step) => getStepAgents(step as ChainStep));
 		const selectedAgents = selectedAgentNames.map((name) => agents.find((agent) => agent.name === name));
 		const externalAgent = selectedAgents.find((agent) => agent?.runner?.type === "external-cli" || agent?.runner?.type === "external-job");
+		if (publicExecution && callerTools?.some((tool) => ["subagent", "subagent_supervisor", "subagent_command"].includes(tool)) && !selectedAgents[0]?.allowNestedSubagents) return buildRequestedModeError(effectiveParams, "Caller tools cannot grant nested delegation unless the agent explicitly allows it.");
+		if (publicExecution && callerTools?.length && selectedAgents[0]?.tools === undefined) return buildRequestedModeError(effectiveParams, "Caller tools require an explicit agent tools baseline; implicit defaults cannot be safely extended.");
 		const launcherAgent = selectedAgents.find((agent) => agent?.launcher !== undefined);
+		if (externalAgent && callerTools?.length) return buildRequestedModeError(effectiveParams, `Agent '${externalAgent.name}' uses runner.type='${externalAgent.runner?.type}' and cannot accept native caller tools.`);
 		// A launcher agent goes to the background whenever the caller omitted async, even if the agent file defaults to foreground.
 		const externalAsyncRequired = effectiveParams.foregroundOnly !== true && ((Boolean(externalAgent) && effectiveParams.async === undefined && effectiveParams.clarify !== true)
 			|| (Boolean(launcherAgent) && normalizedParams.async === undefined && normalizedParams.clarify !== true));
