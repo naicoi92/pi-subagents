@@ -302,11 +302,11 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 	});
 	it("sends worker warnings on the first successful remote prompt only", async () => {
 		const identity: HerdrRunIdentity = { runId: "run_12345678", machineId: "m1", target: "remote", session: null, workspaceId: "w", tabId: "t", paneId: "p", terminalId: "term", agentName: "agent", nativeSessionId: "native", cwd: "/remote", runtimeDir: "/tmp/run" };
-		const owner = {identity, connection:{}, snapshot:{connection:"connected",state:"ready",identity,revision:0}, async cleanup(){}} as unknown as HerdrPlacedRunOwner;
+		const host = {async prompt(){}} as any;
+		const owner = {identity, connection:{}, host, snapshot:{connection:"connected",state:"ready",identity,revision:0}, async cleanup(){}} as unknown as HerdrPlacedRunOwner;
 		let listener: (frame: any) => void = () => {}; const sent: string[] = []; let fail = true;
 		const bridge = {adopt(callback: typeof listener){listener=callback;return [];}, failure:new Promise<never>(()=>{}), async prepare(id:string, _operation:string, text:string){sent.push(text); if (fail) { fail=false; throw new Error("rejected"); } queueMicrotask(() => listener({type:"settled",requestId:id,nativeSessionId:"native",idle:true,pending:false}));}, close(){}} as unknown as BridgeChannel;
-		const host = {async prompt(){}} as any;
-		const session = new HerdrPiSession(owner, {async close(){}}, bridge, undefined, undefined, runtime, undefined, host, ["selection unavailable"]);
+		const session = new HerdrPiSession(owner, {async close(){}}, bridge, undefined, undefined, runtime, undefined, ["selection unavailable"]);
 		await assert.rejects(session.prompt("first"), /rejected/);
 		await session.prompt("retry"); await session.prompt("follow-up");
 		assert.match(sent[0]!, /selection unavailable/); assert.match(sent[1]!, /selection unavailable/); assert.equal(sent[2], "follow-up");
