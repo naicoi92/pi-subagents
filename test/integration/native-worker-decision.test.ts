@@ -72,6 +72,21 @@ for (const baseline of [undefined, ["mcp__server__tool"], ["codemode"]] as const
  });
 }
 
+it("reports unsupported tool selection when extensions are denied", async () => {
+ await withForeground(async (f) => {
+  f.agent.tools = ["read"];
+  let observed: unknown;
+  const registration = owner(f, { async decide(request) {
+   observed = request.facts.toolSelection;
+   return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" };
+  } });
+  try {
+   await f.executor.executeDelegated("deny-extensions", { agent: f.agent.name, task: "Work", async: false, artifacts: false, acceptance: false, capabilityCeiling: { version: 1, denyExtensions: true, sources: ["test"] } }, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(observed, "unsupported");
+  } finally { registration.dispose(); }
+ });
+});
+
 it("N01-foreground: actual executor invokes authority before scripted factory with authored facts", async () => {
 	const f = fixture(); const mock = createMockPi(); mock.install();
 	let calls = 0; const applied: AppliedWorkerDecision[] = [];

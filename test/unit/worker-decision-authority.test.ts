@@ -65,6 +65,13 @@ function fixture(authority?: WorkerDecisionAuthority) {
 	return { clock, sessionId, registration, input, applied };
 }
 
+it("rejects an invalid tool selection capability fact", async () => {
+ const f = fixture();
+ f.input.facts = { ...f.input.facts, toolSelection: "invalid" as never };
+ try { assert.deepEqual(await prepareWorkerDecision(f.input), { kind: "blocked", reason: "invalid-request" }); }
+ finally { f.registration.dispose(); }
+});
+
 it("owner cancellation is a consumed blocked decision", async () => {
 	let calls = 0;
 	let validations = 0;
