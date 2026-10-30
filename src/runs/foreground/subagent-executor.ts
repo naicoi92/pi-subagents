@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { SUBAGENT_WORKER_DECISION_ACCEPTED_EVENT, WorkerDecisionAuthorityError, type SubagentWorkerDecisionAcceptedEvent, type WorkerDecisionAuthoritySnapshot } from "../../shared/worker-decision-authority.ts";
 import { prepareNativeWorkerDecision, type NativeWorkerDecision } from "../shared/native-worker-decision.ts";
 import { childSessionFactory } from "../shared/child-session.ts";
-import { applyThinkingSuffix, resolvePiLaunchToolPlan } from "../shared/child-tool-plan.ts";
+import { applyThinkingSuffix, resolvePiLaunchToolPlan, supportsWorkerToolSelection } from "../shared/child-tool-plan.ts";
 import { intersectThinkingCeilings } from "../../shared/thinking-ceiling.ts";
 import { resolvePermissionRules } from "../shared/permissions.ts";
 import { resolveSkillsWithFallback } from "../../agents/skills.ts";
@@ -7763,6 +7763,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					sessionId: requestSessionId, routing: workerDecisionRouting,
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
 					agent: nativeAgent, task: effectiveParams.task ?? "", callerTools,
+					toolSelection: !effectiveAsync && !(effectiveParams.machine ?? nativeAgent.machine) && !launchCapabilityCeiling()?.denyExtensions && supportsWorkerToolSelection(nativeAgent) ? "supported" : "unsupported",
 					...projectHostToolMetadata(deps.pi.getAllTools?.()), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
 					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",

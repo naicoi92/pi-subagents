@@ -33,6 +33,12 @@ import {
 	type SubagentCapabilityAudit,
 } from "./capability-ceiling.ts";
 
+export function supportsWorkerToolSelection(input: Pick<ResolvePiLaunchToolPlanInput, "tools" | "callerTools" | "mcpDirectTools">): boolean {
+	if (input.tools === undefined || input.tools.some((tool) => tool.startsWith("+") || tool.startsWith("-") || tool.includes("*") || tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) return false;
+	const baseline = [...input.tools, ...(input.callerTools ?? []), ...(input.mcpDirectTools ?? [])];
+	return !input.mcpDirectTools?.length && !baseline.some((name) => name.startsWith("mcp__") || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "codemode", "models"].includes(name) || name.includes("*") || name.startsWith("+") || name.startsWith("-"));
+}
+
 const MAX_LAUNCH_RESOLVED_EXTENSION_IDS = 32;
 const RUNTIME_EXTENSION_DIR = path.dirname(fileURLToPath(import.meta.url));
 const FANOUT_CHILD_EXTENSION_DIR = path.join(RUNTIME_EXTENSION_DIR, "..", "..", "extension");
@@ -334,12 +340,10 @@ export function resolvePiLaunchToolPlan(
 	const workerToolWarnings: string[] = [];
 	const workerSelectedTools: import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[] = [];
 	if (input.workerSelectedTools !== undefined) {
-		if (input.tools === undefined || input.tools.some((tool) => tool.startsWith("+") || tool.startsWith("-") || tool.includes("*") || tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) throw new Error("Worker tool selection requires an explicit agent tool list without modifiers, patterns, or extension paths.");
+		if (!supportsWorkerToolSelection(input)) throw new Error("Worker tool selection cannot preserve the agent's tool baseline on this supported path.");
 		if (input.requireReadTool && (allowedToolSet && !allowedToolSet.has("read") || matchesExclusion("read"))) throw new Error("Worker tool selection conflicts with required tool 'read'.");
 		if (input.structuredOutput && (allowedToolSet && !allowedToolSet.has("structured_output") || matchesExclusion("structured_output"))) throw new Error("Worker tool selection conflicts with required tool 'structured_output'.");
 		const baseline = [...requestedBuiltinTools, ...(input.callerTools ?? []), ...(input.mcpDirectTools ?? [])];
-		if (baseline.some((name) => name.startsWith("mcp__") || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name)) || input.mcpDirectTools?.length) throw new Error("Worker tool selection cannot preserve an MCP or MCP resource baseline on this supported path.");
-		if (baseline.some((name) => name === "codemode" || name === "models" || name.includes("*") || name.startsWith("+") || name.startsWith("-"))) throw new Error("Worker tool selection cannot preserve codemode, models, modifiers, or wildcard baseline on this supported path.");
 		for (const identity of input.workerSelectedTools) {
 			const { name, sourcePath } = identity;
 			if (allowedToolSet && !allowedToolSet.has(name)) { workerToolWarnings.push(`Selected tool '${name}' blocked by capability ceiling; omitted.`); continue; }
