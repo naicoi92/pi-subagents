@@ -1,4 +1,5 @@
 import { projectHostToolMetadata } from "../shared/native-worker-decision.ts";
+import { formatWorkerLaunchReceipt, toolSelectionUnavailableReason } from "../shared/worker-launch-receipt.ts";
 import type { SubagentAttachedForegroundCompleteEvent } from "../../shared/types.ts";
 import { issueWorkerPresentationBinding } from "../../shared/worker-presentation.ts";
 import { randomUUID } from "node:crypto";
@@ -7859,6 +7860,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			? requestedWorkflowChildAsyncId
 			: randomUUID();
 		let nativeWorkerDecision: NativeWorkerDecision | undefined;
+		let toolSelectionUnavailable: string | undefined;
+		let hostToolsIncomplete = false;
 		const nativeAgent = hasSingle ? agents.find((agent) => agent.name === effectiveParams.agent) : undefined;
 		if (nativeAgent && (!nativeAgent.runner || nativeAgent.runner.type === "pi") && workerDecisionRouting.kind !== "never-owned") {
 			try {
@@ -7875,18 +7878,24 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
 					agent: nativeAgent, task: effectiveParams.task ?? "", callerTools,
 					toolSelection: (() => {
-						if ((effectiveParams.machine ?? nativeAgent.machine) || launchCapabilityCeiling()?.denyExtensions || !supportsWorkerToolSelection(nativeAgent)) return "unsupported";
-						try {
-							const skills = normalizeSkillInput(effectiveParams.skill);
-							const resolved = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
-							resolvePiLaunchToolPlan({ tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, workerSelectedTools: [], excludeTools: nativeAgent.excludeTools, mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolved.resolved.length > 0, structuredOutput: Boolean(effectiveParams.outputSchema), capabilityCeiling: launchCapabilityCeiling(), agentName: nativeAgent.name, runtimeSnapshotHost: deps.pi });
-							return "supported";
-						} catch {
-							// A failed probe cannot establish grant support; admission still checks the actual launch.
-							return "unsupported";
+						const remote = Boolean(effectiveParams.machine ?? nativeAgent.machine);
+						const denyExtensions = Boolean(launchCapabilityCeiling()?.denyExtensions);
+						const baselineSupported = supportsWorkerToolSelection(nativeAgent);
+						let probeError: unknown;
+						if (!remote && !denyExtensions && baselineSupported) {
+							try {
+								const skills = normalizeSkillInput(effectiveParams.skill);
+								const resolved = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
+								resolvePiLaunchToolPlan({ tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, workerSelectedTools: [], excludeTools: nativeAgent.excludeTools, mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolved.resolved.length > 0, structuredOutput: Boolean(effectiveParams.outputSchema), capabilityCeiling: launchCapabilityCeiling(), agentName: nativeAgent.name, runtimeSnapshotHost: deps.pi });
+							} catch (error) {
+								// A failed probe cannot establish grant support; admission still checks the actual launch.
+								probeError = error;
+							}
 						}
+						toolSelectionUnavailable = toolSelectionUnavailableReason({ remote, denyExtensions, baselineSupported, probeError });
+						return toolSelectionUnavailable === undefined ? "supported" : "unsupported";
 					})(),
-					...projectHostToolMetadata(deps.pi.getAllTools?.()), context: contextPolicy.contextForAgent(nativeAgent.name),
+					...(() => { const projected = projectHostToolMetadata(deps.pi.getAllTools?.()); hostToolsIncomplete = projected.toolsIncomplete === true; return projected; })(), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
 					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",
 					comparison: comparisonModel
@@ -8306,9 +8315,14 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 
 		const withWorkerDecisionBinding = (result: AgentToolResult<Details>): AgentToolResult<Details> => {
 			const warnings = [...new Set([...(nativeWorkerDecision?.receipt.toolWarnings ?? []), ...(result.details?.results?.flatMap((child) => child.workerToolWarnings ?? []) ?? [])])];
-			return nativeWorkerDecision
-				? { ...result, ...(warnings.length ? { content: [...result.content, { type: "text" as const, text: `Tool selection warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}` }] } : {}), details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } }
-				: result;
+			if (!nativeWorkerDecision || !nativeAgent) return result;
+			const blocks = [formatWorkerLaunchReceipt({
+				agent: nativeAgent.name, context: contextPolicy.contextForAgent(nativeAgent.name), async: effectiveAsync,
+				baselineTools: nativeAgent.tools, receipt: nativeWorkerDecision.receipt,
+				toolSelectionUnavailable, toolsIncomplete: hostToolsIncomplete,
+			})];
+			if (warnings.length) blocks.push(`Tool selection warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}`);
+			return { ...result, content: [...result.content, { type: "text" as const, text: blocks.join("\n\n") }], details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } };
 		};
 		let nestedForegroundStarted = false;
 		let asyncLaunchFailed = false;

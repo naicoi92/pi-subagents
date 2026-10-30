@@ -1313,3 +1313,19 @@ for (const mode of ["missing-callable-api", "extra-callable"] as const) it(`actu
   assert.equal(result.isError,true); assert.match(JSON.stringify(result.content), mode === "missing-callable-api" ? /callable registry verification/ : /cannot enforce callable ceiling.*ungranted/); assert.equal(disposed,true);
  } finally {registration.dispose();mock.uninstall();}
 });
+
+it("async launch result carries the worker launch receipt with the unavailable-tool-selection reason", async (t) => {
+ const f = fixture();
+ t.mock.method(childProcess, "spawn", () => { throw new Error("intercepted fixture spawn"); }); syncBuiltinESMExports();
+ f.agent.tools = ["read", "grep"];
+ const registration = owner(f, {async decide() {return selected;}});
+ try {
+  const result = await f.executor.execute("receipt-async", {agent:f.agent.name, task:"Review", async:true, artifacts:false, acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  const text = JSON.stringify(result.content);
+  assert.match(text, /Worker launch: /);
+  assert.match(text, /async\)/);
+  assert.match(text, /Model: /);
+  assert.match(text, /baseline\): read, grep/);
+  assert.match(text, /background launches do not support tool selection/);
+ } finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
