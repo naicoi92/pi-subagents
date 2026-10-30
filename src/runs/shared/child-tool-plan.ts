@@ -119,6 +119,7 @@ function resolveFastModeExtension(input: Pick<ResolvePiLaunchToolPlanInput, "fas
 export interface ResolvePiLaunchToolPlanInput {
 	tools?: string[];
 	callerTools?: string[];
+	workerSelectedTools?: readonly import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	extensions?: string[];
@@ -167,6 +168,8 @@ export interface PiLaunchToolPlan {
 	extensionArgs: string[];
 	disableAmbientExtensions: boolean;
 	capabilityAudit?: SubagentCapabilityAudit;
+	workerSelectedTools: import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[];
+	workerToolWarnings: string[];
 	/** Non-fatal launch warnings; they do not change behavior. */
 	warnings: string[];
 }
@@ -327,10 +330,33 @@ export function resolvePiLaunchToolPlan(
 	const declaredBuiltinTools = [...new Set([...ceilingFilteredBuiltinTools, ...(input.callerTools ?? []).filter((tool) => !allowedToolSet || allowedToolSet.has(tool))])];
 	const excludeTools = [...new Set((input.excludeTools ?? []).map((tool) => tool.trim()).filter(Boolean))];
 	const excludedToolSet = new Set(excludeTools);
-	const effectiveDeclaredBuiltinTools = declaredBuiltinTools.filter((tool) => !excludedToolSet.has(tool));
+	const matchesExclusion = (name: string) => excludeTools.some((pattern) => new RegExp(`^${pattern.split("*").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join(".*")}$`).test(name));
+	const workerToolWarnings: string[] = [];
+	const workerSelectedTools: import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[] = [];
+	if (input.workerSelectedTools !== undefined) {
+		if (input.tools === undefined || input.tools.some((tool) => tool.startsWith("+") || tool.startsWith("-") || tool.includes("*") || tool.includes("/") || tool.endsWith(".ts") || tool.endsWith(".js"))) throw new Error("Worker tool selection requires an explicit agent tool list without modifiers, patterns, or extension paths.");
+		if (input.requireReadTool && (allowedToolSet && !allowedToolSet.has("read") || matchesExclusion("read"))) throw new Error("Worker tool selection conflicts with required tool 'read'.");
+		if (input.structuredOutput && (allowedToolSet && !allowedToolSet.has("structured_output") || matchesExclusion("structured_output"))) throw new Error("Worker tool selection conflicts with required tool 'structured_output'.");
+		const baseline = [...requestedBuiltinTools, ...(input.callerTools ?? []), ...(input.mcpDirectTools ?? [])];
+		if (baseline.some((name) => name.startsWith("mcp__") || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name)) || input.mcpDirectTools?.length) throw new Error("Worker tool selection cannot preserve an MCP or MCP resource baseline on this supported path.");
+		if (baseline.some((name) => name === "codemode" || name === "models" || name.includes("*") || name.startsWith("+") || name.startsWith("-"))) throw new Error("Worker tool selection cannot preserve codemode, models, modifiers, or wildcard baseline on this supported path.");
+		for (const identity of input.workerSelectedTools) {
+			const { name, sourcePath } = identity;
+			if ((allowedToolSet && !allowedToolSet.has(name)) || matchesExclusion(name)) continue;
+			if (baseline.includes(name)) { workerToolWarnings.push(`Selected tool '${name}' overlaps the baseline; optional source grant omitted.`); continue; }
+			if (name.startsWith("+") || name.startsWith("-") || name.includes("*") || name === "codemode" || name === "models" || name.startsWith("mcp__") || ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"].includes(name) || capabilityCeiling?.denyExtensions || !sourcePath || !path.isAbsolute(sourcePath)) {
+				workerToolWarnings.push(`Selected tool '${name}' has no supported file-backed grant; omitted.`);
+				continue;
+			}
+			if (input.workerSelectedTools.filter((candidate) => candidate.name === name).length !== 1) { workerToolWarnings.push(`Selected tool '${name}' has ambiguous source; omitted.`); continue; }
+			workerSelectedTools.push(identity);
+		}
+	}
+	const effectiveDeclaredBuiltinTools = declaredBuiltinTools.filter((tool) => input.workerSelectedTools !== undefined ? !matchesExclusion(tool) : !excludedToolSet.has(tool));
+	if (input.workerSelectedTools !== undefined && input.requireReadTool && !effectiveDeclaredBuiltinTools.includes("read")) effectiveDeclaredBuiltinTools.push("read");
 	const fanoutAuthorized = effectiveDeclaredBuiltinTools.includes("subagent") || (
 		input.allowNestedSubagents === true &&
-		!excludedToolSet.has("subagent") &&
+		!(input.workerSelectedTools !== undefined ? matchesExclusion("subagent") : excludedToolSet.has("subagent")) &&
 		(!allowedToolSet || allowedToolSet.has("subagent"))
 	);
 	if (effectiveDeclaredBuiltinTools.includes("subagent_supervisor") && !fanoutAuthorized) {
@@ -374,10 +400,11 @@ export function resolvePiLaunchToolPlan(
 		input.tools !== undefined ||
 		(input.mcpDirectTools?.length ?? 0) > 0 ||
 		allowedToolSet !== undefined;
-	const internalTools = (input.structuredOutput ? ["structured_output"] : []).filter((tool) => !excludedToolSet.has(tool));
+	const internalTools = (input.structuredOutput ? ["structured_output"] : []).filter((tool) => input.workerSelectedTools !== undefined ? !matchesExclusion(tool) && (!allowedToolSet || allowedToolSet.has(tool)) : !excludedToolSet.has(tool));
 	const effectiveToolAllowlist = [
 		...new Set([
 			...effectiveDeclaredBuiltinTools,
+			...workerSelectedTools.map(({ name }) => name),
 			...effectiveMcpTools,
 			...internalTools,
 		]),
@@ -513,6 +540,8 @@ export function resolvePiLaunchToolPlan(
 		extensionArgs,
 		disableAmbientExtensions,
 		warnings,
+		workerSelectedTools,
+		workerToolWarnings,
 		...(capabilityAudit ? { capabilityAudit } : {}),
 	};
 }

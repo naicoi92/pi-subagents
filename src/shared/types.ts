@@ -1327,6 +1327,8 @@ export interface SingleResult {
 	sessionFile?: string;
 	skills?: string[];
 	skillsWarning?: string;
+	/** Optional worker-selected tools that could not be granted to this child. */
+	workerToolWarnings?: string[];
 	progress?: AgentProgress;
 	progressSummary?: ProgressSummary;
 	toolCalls?: ToolCallSummary[];

@@ -955,3 +955,64 @@ it("inventory over 256 independently signals incomplete", async () => {
   try { assert.equal((await launch(f)).isError, undefined); } finally { registration.dispose(); }
  });
 });
+
+it("foreground public decision loads selected file-backed tool into an actual Pi child", { skip: !process.env.PI_SUBAGENTS_NATIVE_PI_ROOT && "requires Pi 1.4.0 host" }, async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({ output: "done" });
+ const source = path.join(f.root, "selected.mjs");
+ fs.writeFileSync(source, `export default pi => pi.registerTool({name:'plugin_selected',label:'Selected',description:'Selected',parameters:{type:'object',properties:{}},async execute(){return {content:[{type:'text',text:'selected works'}],details:{}}}});`);
+ f.agent.tools = ["read"];
+ f.host.getAllTools = () => [{name:"plugin_selected",description:"Selected",sourceInfo:{path:source}}];
+ const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!, "dist/index.js"));
+ const { createDefaultChildSessionFactory } = await import("../../src/runs/shared/child-session.ts");
+ let actual: any;
+ const real = createDefaultChildSessionFactory({loadPiCodingAgent: async () => ({...host, createAgentSession: async (options: any) => { const created = await host.createAgentSession(options); actual = created.session; return created; }}) as any});
+ const fake = childSessionFactory();
+ setChildSessionFactory({async create(input) {
+  const child = await real.create({...input, model: undefined, parentProviderRegistry: undefined, storage: {kind:"memory"}});
+  assert.deepEqual(actual.getCallableToolNames().sort(), ["grep", "plugin_selected", "read"]);
+  const tool = actual.agent.state.tools.find((value: any) => value.name === "plugin_selected");
+  assert.equal((await tool.execute("selected", {}, new AbortController().signal)).content[0].text, "selected works");
+  await child.dispose(); return fake.create(input);
+ }, dispose: async () => { await real.dispose(); await fake.dispose(); }});
+ const registration = owner(f, {async decide() {return {...selected, selectedTools:[{name:"plugin_selected",sourcePath:source}]} as WorkerDecision;}});
+ try {
+  const result = await f.executor.executeDelegated("actual-selected", {agent:f.agent.name,task:"Review",tools:["grep"],async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+ } finally {registration.dispose(); mock.uninstall();}
+});
+
+for (const mode of ["ceiling", "excluded", "missing", "mismatch", "implicit", "mcp"] as const) it(`foreground selected tool ${mode} keeps ceiling or reports unsupported grant`, { skip: !process.env.PI_SUBAGENTS_NATIVE_PI_ROOT && "requires Pi 1.4.0 host" }, async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
+ const source = path.join(f.root, "selected.mjs");
+ fs.writeFileSync(source, mode === "missing" ? `export default () => {};` : `export default pi => pi.registerTool({name:'plugin_selected',label:'Selected',description:'Selected',parameters:{type:'object',properties:{}},async execute(){return {content:[{type:'text',text:'ok'}],details:{}}}});`);
+ f.agent.tools = mode === "implicit" ? undefined : mode === "mcp" ? ["read", "mcp__server__tool"] : ["read"];
+ if (mode === "excluded") f.agent.excludeTools = ["plugin_*"];
+ const expectedSource = mode === "mismatch" ? path.join(f.root, "wrong.mjs") : source;
+ if (mode === "mismatch") { fs.writeFileSync(expectedSource, `export default () => {};`); f.agent.extensions = [source]; }
+ f.host.getAllTools = () => [{name:"plugin_selected",description:"Selected",sourceInfo:{path:expectedSource}}];
+ const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!, "dist/index.js"));
+ const { createDefaultChildSessionFactory } = await import("../../src/runs/shared/child-session.ts");
+ let actual: any, childPrompt = "", createdCount = 0;
+ const real = createDefaultChildSessionFactory({loadPiCodingAgent: async () => ({...host, createAgentSession: async (options: any) => { const created = await host.createAgentSession(options); actual = created.session; return created; }}) as any});
+ const fake = childSessionFactory();
+ setChildSessionFactory({async create(input) {
+  createdCount++;
+  const child = await real.create({...input, model:undefined,parentProviderRegistry:undefined,storage:{kind:"memory"}});
+  assert.deepEqual(actual.getCallableToolNames(), ["read"]);
+  actual.prompt = async (text: string) => {childPrompt = text;};
+  await child.prompt("Task: Review");
+  const warnings = child.workerToolWarnings;
+  await child.dispose(); const scripted = await fake.create(input);
+  return {...scripted,workerToolWarnings:warnings};
+ }, dispose:async()=>{await real.dispose(); await fake.dispose();}});
+ const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"plugin_selected",sourcePath:expectedSource}]} as WorkerDecision;}});
+ try {
+  const result = await f.executor.executeDelegated(`actual-${mode}`, {agent:f.agent.name,task:"Review",async:false,artifacts:false,acceptance:false,...(mode === "ceiling" ? {capabilityCeiling:{version:1,allowedTools:["read"],denyExtensions:false,sources:["test"]}} : {})}, new AbortController().signal, undefined, f.ctx as any);
+  if (mode === "implicit" || mode === "mcp") { assert.equal(result.isError,true); assert.match(JSON.stringify(result.content), mode === "implicit" ? /explicit agent tool list/ : /MCP or MCP resource baseline/); assert.equal(createdCount,0); }
+  else {
+   assert.equal(result.isError,undefined,JSON.stringify(result.content));
+   if (mode === "ceiling" || mode === "excluded") assert.doesNotMatch(childPrompt,/Tool selection warnings/);
+   else { assert.match(childPrompt,/missing or source mismatch/); assert.match(JSON.stringify(result.content),/missing or source mismatch/); }
+  }
+ } finally {registration.dispose();mock.uninstall();}
+});

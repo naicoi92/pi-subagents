@@ -149,6 +149,8 @@ export interface AgentConfig {
 	tools?: string[];
 	/** Caller tool identities, never extension paths. */
 	callerTools?: string[];
+	/** Foreground-only identities committed by the worker decision authority. */
+	workerSelectedTools?: readonly import("../shared/worker-decision-authority.ts").WorkerToolIdentity[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	allowedAgents?: string[];

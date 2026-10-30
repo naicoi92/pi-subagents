@@ -70,6 +70,8 @@ export interface ChildSessionLaunch {
 	model?: string;
 	/** Explicit tool allowlist; undefined keeps pi's defaults. */
 	tools?: string[];
+	workerSelectedTools?: readonly import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[];
+	workerToolWarnings?: readonly string[];
 	/** Tools of Pi's built-in MCP extension the child must declare to its model directly, with the `mcp:` selector that granted each; `tools` names them too. */
 	builtinMcpTools?: Array<{ name: string; selector: string }>;
 	/** Cancels startup before a child exists to receive abort(), including its MCP connection wait. */
@@ -115,6 +117,7 @@ export interface ChildSession {
 	/** True while Pi still has steering or follow-up input that has not started a turn. */
 	hasQueuedMessages?(): boolean;
 	readonly messages: readonly AgentMessage[];
+	readonly workerToolWarnings?: readonly string[];
 	readonly sessionFile: string | undefined;
 	readonly sessionId: string;
 	readonly modelId: string | undefined;
@@ -479,6 +482,9 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			const disposalsAtStart = disposals;
 			const pi = await loadPiCodingAgent();
 			const builtinMcpTools = launch.builtinMcpTools ?? [];
+			const workerWarnings = [...(launch.workerToolWarnings ?? [])];
+			const selectedTools = launch.workerSelectedTools;
+			const selectedPaths = selectedTools?.flatMap((tool) => tool.sourcePath ? [tool.sourcePath] : []) ?? [];
 			let readinessTool: ToolDefinition | undefined;
 			const builtinMcp = builtinMcpTools.length ? selectedBuiltinMcpExtension(pi, builtinMcpTools, () => readinessTool) : undefined;
 			const modelRuntime = launch.parentProviderRegistry
@@ -535,7 +541,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				noPromptTemplates: true,
 				noThemes: true,
 				noContextFiles: launch.noContextFiles,
-				additionalExtensionPaths: builtinMcp ? [...launch.extensionPaths, "builtin:mcp"] : launch.extensionPaths,
+				additionalExtensionPaths: [...new Set([...launch.extensionPaths, ...selectedPaths, ...(builtinMcp ? ["builtin:mcp"] : [])])],
 				extensionFactories: [...launch.hooks, ...(commands ? [{ name: "pi-subagents:commands", factory: (api: ExtensionAPI) => {
 					api.registerTool(commands.wrap(pi.createBashTool(launch.cwd, { commandPrefix: settingsManager.getShellCommandPrefix(), shellPath: settingsManager.getShellPath() }) as unknown as ToolDefinition));
 					api.registerTool(commands.tool());
@@ -602,13 +608,25 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					? pi.resolveCliModel({ cliModel: launch.model, modelRuntime })
 					: undefined;
 				if (resolvedModel?.error) throw new Error(resolvedModel.error);
+				const childTools = launch.tools ? [...launch.tools] : undefined;
+				if (selectedTools) {
+					const loaded = loader.getExtensions().extensions;
+					for (const selected of selectedTools) {
+						const matches = loaded.flatMap((extension) => [...extension.tools.values()]).filter((tool) => tool.definition.name === selected.name);
+						const valid = matches.length === 1 && matches[0]!.sourceInfo.path === selected.sourcePath && matches[0]!.definition.namespace?.name === selected.namespace && matches[0]!.definition.exposure !== "hidden" && matches[0]!.definition.exposure !== "model-only";
+						if (!valid) {
+							workerWarnings.push(`Selected tool '${selected.name}' missing or source mismatch; omitted.`);
+							if (childTools) for (let index = childTools.length - 1; index >= 0; index--) if (childTools[index] === selected.name) childTools.splice(index, 1);
+						}
+					}
+				}
 				const { session } = await pi.createAgentSession({
 					cwd: launch.cwd,
 					agentDir,
 					modelRuntime,
 					...(resolvedModel?.model ? { model: resolvedModel.model } : {}),
 					...(resolvedModel?.thinkingLevel ? { thinkingLevel: resolvedModel.thinkingLevel } : {}),
-					...(launch.tools ? { tools: launch.tools } : {}),
+					...(childTools ? { tools: childTools } : {}),
 					...(launch.excludeTools?.length ? { excludeTools: launch.excludeTools } : {}),
 					resourceLoader: loader,
 					sessionManager,
@@ -632,6 +650,25 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					throw error;
 				} finally {
 					binding = false;
+				}
+				if (selectedTools) {
+					if (typeof session.getCallableToolNames !== "function" || typeof session.getAllTools !== "function") {
+						await shutdownSession(session);
+						throw new Error("Worker tool selection requires host callable registry verification.");
+					}
+					const callable = new Set(session.getCallableToolNames());
+					const allowed = new Set(childTools ?? []);
+					const unexpected = [...callable].filter((name) => !allowed.has(name));
+					if (unexpected.length) { await shutdownSession(session); throw new Error(`Worker tool selection cannot enforce callable ceiling: ${unexpected.join(", ")}.`); }
+					const all = session.getAllTools();
+					for (const selected of selectedTools) {
+						const tool = all.find((candidate) => candidate.name === selected.name);
+						if (tool && (tool.sourceInfo.path !== selected.sourcePath || tool.namespace?.name !== selected.namespace || !callable.has(selected.name))) {
+							await shutdownSession(session);
+							throw new Error(`Selected tool '${selected.name}' changed source or is not callable after startup; refusing unsafe launch.`);
+						}
+						if (!tool && !workerWarnings.some((warning) => warning.includes(`'${selected.name}'`))) workerWarnings.push(`Selected tool '${selected.name}' missing after startup; omitted.`);
+					}
 				}
 				if (requiredStartupErrors.length > 0) {
 					// Binding finished, so the other extensions' session_start handlers ran and may hold resources.
@@ -667,7 +704,8 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			}
 			const child: ChildSession = {
 				subscribe: (listener) => session.subscribe((event) => listener(event as unknown as ChildSessionEvent)),
-				prompt: (text) => session.prompt(text),
+				prompt: (text) => session.prompt(workerWarnings.length ? `${text}\n\nTool selection warnings:\n${workerWarnings.map((warning) => `- ${warning}`).join("\n")}` : text),
+				workerToolWarnings: workerWarnings,
 				...(commands ? { finishCommands: () => commands.finish() } : {}),
 				steer: async (text) => { await session.steer(text); },
 				followUp: async (text) => { await session.followUp(text); },

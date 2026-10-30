@@ -7622,8 +7622,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		});
 		const scopedAgents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
 		const callerTools = delegatedExecution ? effectiveParams.tools : undefined;
-		const agents = callerTools?.length ? scopedAgents.map((agent) => agent.name === effectiveParams.agent && (!agent.runner || agent.runner.type === "pi")
-			? { ...agent, callerTools: [...callerTools] } : agent) : scopedAgents;
+		const agents = scopedAgents.map((agent) => agent.name === effectiveParams.agent && (!agent.runner || agent.runner.type === "pi") && (callerTools?.length || agent.callerTools !== undefined || agent.workerSelectedTools !== undefined)
+			? { ...agent, callerTools: callerTools?.length ? [...callerTools] : undefined, workerSelectedTools: undefined } : agent);
 		const inheritedNestedRouteValue = inheritedNestedRoute(deps);
 		const nestedParentAddress = inheritedNestedRouteValue ? inheritedNestedParentAddress(deps) : undefined;
 		const shareEnabled = effectiveParams.share === true;
@@ -7808,6 +7808,11 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (launchRule) throw new Error(launchRule);
 					},
 				});
+				if (effectiveAsync && nativeWorkerDecision.receipt.selectedTools !== undefined) throw new Error("Worker tool selection is not supported for background launches.");
+				if ((effectiveParams.machine ?? nativeAgent.machine) && nativeWorkerDecision.receipt.selectedTools !== undefined) throw new Error("Worker tool selection is not supported for remote launches.");
+				if (!effectiveAsync && nativeWorkerDecision.receipt.selectedTools !== undefined) {
+					agents[agents.indexOf(nativeAgent)] = { ...nativeAgent, workerSelectedTools: nativeWorkerDecision.receipt.selectedTools };
+				}
 				effectiveParams = { ...effectiveParams, model: nativeWorkerDecision.receipt.model, modelOrigin: "explicit" };
 				delegatedThinkingOverride = nativeWorkerDecision.receipt.thinking;
 			} catch (error) { return toExecutionErrorResult(effectiveParams, error, contextPolicy.contextSummary); }
@@ -8176,9 +8181,12 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			}
 		};
 
-		const withWorkerDecisionBinding = (result: AgentToolResult<Details>): AgentToolResult<Details> => nativeWorkerDecision
-			? { ...result, details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } }
-			: result;
+		const withWorkerDecisionBinding = (result: AgentToolResult<Details>): AgentToolResult<Details> => {
+			const warnings = result.details?.results?.flatMap((child) => child.workerToolWarnings ?? []) ?? [];
+			return nativeWorkerDecision
+				? { ...result, ...(warnings.length ? { content: [...result.content, { type: "text" as const, text: `Tool selection warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}` }] } : {}), details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } }
+				: result;
+		};
 		let nestedForegroundStarted = false;
 		let asyncLaunchFailed = false;
 		try {

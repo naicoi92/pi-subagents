@@ -81,6 +81,7 @@ export interface BuildInProcessChildLaunchInput {
 	requireReadTool?: boolean;
 	tools?: string[];
 	callerTools?: string[];
+	workerSelectedTools?: readonly import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[];
 	excludeTools?: string[];
 	extensions?: string[];
 	subagentOnlyExtensions?: string[];
@@ -201,6 +202,7 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 	const toolPlan = resolvePiLaunchToolPlan({
 		tools: input.tools,
 		callerTools: input.callerTools,
+		workerSelectedTools: input.workerSelectedTools,
 		excludeTools: input.excludeTools,
 		allowNestedSubagents: input.allowNestedSubagents,
 		extensions: input.extensions,
@@ -335,8 +337,9 @@ export function buildInProcessChildLaunch(input: BuildInProcessChildLaunchInput)
 		...(input.parentSessionFile ? { parentSessionFile: input.parentSessionFile } : {}),
 		...(input.model ? { model: input.model } : {}),
 		...(toolPlan.explicitToolAllowlist ? { tools: toolPlan.effectiveToolAllowlist } : {}),
+		...(input.workerSelectedTools !== undefined ? { workerSelectedTools: toolPlan.workerSelectedTools, workerToolWarnings: toolPlan.workerToolWarnings } : {}),
 		...(toolPlan.builtinMcpTools?.length ? { builtinMcpTools: toolPlan.builtinMcpTools } : {}),
-		...(!toolPlan.explicitToolAllowlist && toolPlan.excludeTools.length > 0 ? { excludeTools: toolPlan.excludeTools } : {}),
+		...(input.workerSelectedTools !== undefined ? { excludeTools: [...toolPlan.excludeTools, "mcp__*", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"] } : !toolPlan.explicitToolAllowlist && toolPlan.excludeTools.length > 0 ? { excludeTools: toolPlan.excludeTools } : {}),
 		extensionPaths,
 		requiredExtensions: toolPlan.requiredExtensions,
 		ambientExtensions,

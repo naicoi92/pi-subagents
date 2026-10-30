@@ -408,6 +408,7 @@ async function runSingleAttempt(
 		requireReadTool: Boolean(shared.resolvedSkillNames?.length),
 		tools: agent.tools,
 		callerTools: agent.callerTools,
+		workerSelectedTools: agent.workerSelectedTools,
 		excludeTools: agent.excludeTools,
 		allowNestedSubagents: agent.allowNestedSubagents,
 		descendantAllowedAgents: agent.allowedAgents,
@@ -1449,6 +1450,7 @@ async function runSingleAttempt(
 					return;
 				}
 				session = created;
+				if (created.workerToolWarnings?.length) result.workerToolWarnings = [...created.workerToolWarnings];
 				const steer = created.steer.bind(created);
 				const followUp = created.followUp.bind(created);
 				created.steer = async (text) => {
