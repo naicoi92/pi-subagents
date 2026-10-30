@@ -140,18 +140,14 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 	};
 }
 
-/** Omit unusable host records rather than letting inventory bounds block a launch. */
+/** Omit structurally invalid host records (missing/empty/NUL fields). Size and count never exclude a tool. */
 export function projectHostToolMetadata(tools: readonly { name: string; description: string; namespace?: { name: string }; sourceInfo?: { path?: string } }[] | undefined): { availableTools?: WorkerToolMetadata[]; toolsIncomplete?: boolean } {
  if (tools === undefined) return {};
  const availableTools: WorkerToolMetadata[] = [];
- let bytes = 0;
  let incomplete = false;
  for (const tool of tools) {
   const fields = [tool?.name, tool?.description, tool?.namespace?.name, tool?.sourceInfo?.path];
-  if (fields.some((value, index) => value === undefined ? index < 2 : typeof value !== "string" || !value || value.includes("\0") || Buffer.byteLength(value) > 1024)) { incomplete = true; continue; }
-  const size = fields.reduce<number>((sum, value) => sum + (value === undefined ? 0 : Buffer.byteLength(value)), 0);
-  if (availableTools.length >= 256 || bytes + size > 65536) { incomplete = true; continue; }
-  bytes += size;
+  if (fields.some((value, index) => value === undefined ? index < 2 : typeof value !== "string" || !value || value.includes("\0"))) { incomplete = true; continue; }
   availableTools.push({ name: tool.name, description: tool.description, ...(tool.namespace?.name !== undefined ? { namespace: tool.namespace.name } : {}), ...(tool.sourceInfo?.path !== undefined ? { sourcePath: tool.sourceInfo.path } : {}) });
  }
  return { availableTools, toolsIncomplete: incomplete };

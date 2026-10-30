@@ -1072,17 +1072,18 @@ it("caller identities never become extension paths", async () => {
  });
 });
 
-it("host metadata omissions reach owner without blocking baseline launch", async () => {
+it("host metadata omits only structurally invalid records and never size or count", async () => {
  await withForeground(async (f, mock) => {
   f.agent.tools = ["read"];
   f.host.getAllTools = () => [
-   { name: "empty", description: "" }, { name: "large", description: "x".repeat(1025) },
-   ...Array.from({length: 260}, (_, i) => ({ name: `tool${i}`, description: "x".repeat(1000) })),
+   { name: "empty", description: "" }, { name: "large", description: "x".repeat(100_000) },
+   ...Array.from({length: 600}, (_, i) => ({ name: `tool${i}`, description: "x".repeat(1000) })),
   ];
   const registration = owner(f, { async decide(request) {
    assert.equal(request.facts.toolsIncomplete, true);
-   assert.ok(request.facts.tools!.length < 256);
-   assert.ok(request.facts.tools!.every(tool => tool.description.length > 0 && tool.description.length <= 1024));
+   assert.equal(request.facts.tools!.length, 601);
+   assert.ok(request.facts.tools!.some(tool => tool.name === "large" && tool.description.length === 100_000));
+   assert.ok(request.facts.tools!.every(tool => tool.description.length > 0));
    return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" };
   } });
   try {
@@ -1160,12 +1161,12 @@ it("delegated async recovery omits caller additions for absent and empty request
  } finally { t.mock.restoreAll(); syncBuiltinESMExports(); for (const dir of directories) fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-it("inventory over 256 independently signals incomplete", async () => {
+it("inventory over 256 is complete and not truncated", async () => {
  await withForeground(async (f) => {
-  f.host.getAllTools = () => Array.from({length: 257}, (_, i) => ({ name: `tool${i}`, description: "valid" }));
+  f.host.getAllTools = () => Array.from({length: 1000}, (_, i) => ({ name: `tool${i}`, description: "valid" }));
   const registration = owner(f, { async decide(request) {
-   assert.equal(request.facts.toolsIncomplete, true);
-   assert.equal(request.facts.tools?.length, 256);
+   assert.equal(request.facts.toolsIncomplete, false);
+   assert.equal(request.facts.tools?.length, 1000);
    return selected;
   } });
   try { assert.equal((await launch(f)).isError, undefined); } finally { registration.dispose(); }

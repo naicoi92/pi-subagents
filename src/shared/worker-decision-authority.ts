@@ -278,14 +278,13 @@ function snapshotToolWarnings(value: unknown): readonly string[] {
 	return Object.freeze([...value]);
 }
 function snapshotToolList(value: unknown, metadata: boolean, reason: "invalid-request" | "invalid-decision"): WorkerToolMetadata[] {
- if (!Array.isArray(value) || value.length > 256) fail(reason);
- let bytes = 0;
+ if (!Array.isArray(value)) fail(reason);
  const field = (v: unknown, required: boolean): string | undefined => {
   if (v === undefined && !required) return undefined;
-  if (typeof v !== "string" || !v || v.includes("\0") || Buffer.byteLength(v) > 1024) fail(reason);
-  bytes += Buffer.byteLength(v); return v;
+  if (typeof v !== "string" || !v || v.includes("\0")) fail(reason);
+  return v;
  };
- const result = value.map((entry) => {
+ return value.map((entry) => {
   if (!entry || typeof entry !== "object" || Array.isArray(entry)) fail(reason);
   const name = field(entry.name, true)!;
   const namespace = field(entry.namespace, false);
@@ -293,8 +292,6 @@ function snapshotToolList(value: unknown, metadata: boolean, reason: "invalid-re
   const description = metadata ? field(entry.description, true)! : "";
   return { name, ...(namespace !== undefined ? { namespace } : {}), ...(sourcePath !== undefined ? { sourcePath } : {}), ...(metadata ? { description } : {}) } as WorkerToolMetadata;
  });
- if (bytes > 65536) fail(reason);
- return result;
 }
 function snapshotCallerTools(value: unknown): string[] {
  if (!isBoundedCallerTools(value)) fail("invalid-request");
