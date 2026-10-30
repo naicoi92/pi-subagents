@@ -1082,6 +1082,30 @@ it("foreground public decision loads selected file-backed tool into an actual Pi
  } finally {registration.dispose(); mock.uninstall();}
 });
 
+it("foreground authority warnings reach the child and parent without a selected tool", { skip: !process.env.PI_SUBAGENTS_NATIVE_PI_ROOT && "requires Pi 1.4.0 host" }, async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
+ f.agent.tools = ["read"];
+ const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!, "dist/index.js"));
+ const { createDefaultChildSessionFactory } = await import("../../src/runs/shared/child-session.ts");
+ let prompt = "";
+ const real = createDefaultChildSessionFactory({loadPiCodingAgent: async () => ({...host, createAgentSession: async (options: any) => { const created = await host.createAgentSession(options); created.session.prompt = async (text: string) => { prompt = text; }; return created; }}) as any});
+ const fake = childSessionFactory();
+ setChildSessionFactory({async create(input) {
+  const child = await real.create({...input, model:undefined, parentProviderRegistry:undefined, storage:{kind:"memory"}});
+  await child.prompt("Task: Review");
+  const warnings = child.workerToolWarnings;
+  await child.dispose(); const scripted = await fake.create(input);
+  return {...scripted, workerToolWarnings:warnings};
+ }, dispose:async()=>{await real.dispose();await fake.dispose();}});
+ const registration = owner(f,{async decide(){return {...selected,toolWarnings:["Worker tool scores unavailable."]} as WorkerDecision;}});
+ try {
+  const result = await f.executor.executeDelegated("authority-warning", {agent:f.agent.name,task:"Review",async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(result.isError,undefined,JSON.stringify(result.content));
+  assert.match(prompt, /Worker tool scores unavailable/);
+  assert.match(JSON.stringify(result.content), /Worker tool scores unavailable/);
+ } finally {registration.dispose();mock.uninstall();}
+});
+
 for (const mode of ["ceiling", "excluded", "missing", "mismatch", "implicit", "mcp"] as const) it(`foreground selected tool ${mode} keeps ceiling or reports unsupported grant`, { skip: !process.env.PI_SUBAGENTS_NATIVE_PI_ROOT && "requires Pi 1.4.0 host" }, async () => {
  const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
  const source = path.join(f.root, "selected.mjs");

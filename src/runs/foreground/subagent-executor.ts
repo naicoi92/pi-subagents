@@ -7622,8 +7622,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		});
 		const scopedAgents = applyScopedIntercomBridgeToAgents(discoveredAgents, intercomBridge, contextPolicy);
 		const callerTools = delegatedExecution ? effectiveParams.tools : undefined;
-		const agents = scopedAgents.map((agent) => agent.name === effectiveParams.agent && (!agent.runner || agent.runner.type === "pi") && (callerTools?.length || agent.callerTools !== undefined || agent.workerSelectedTools !== undefined)
-			? { ...agent, callerTools: callerTools?.length ? [...callerTools] : undefined, workerSelectedTools: undefined } : agent);
+		const agents = scopedAgents.map((agent) => agent.name === effectiveParams.agent && (!agent.runner || agent.runner.type === "pi") && (callerTools?.length || agent.callerTools !== undefined || agent.workerSelectedTools !== undefined || agent.workerToolWarnings !== undefined)
+			? { ...agent, callerTools: callerTools?.length ? [...callerTools] : undefined, workerSelectedTools: undefined, workerToolWarnings: undefined } : agent);
 		const inheritedNestedRouteValue = inheritedNestedRoute(deps);
 		const nestedParentAddress = inheritedNestedRouteValue ? inheritedNestedParentAddress(deps) : undefined;
 		const shareEnabled = effectiveParams.share === true;
@@ -7823,8 +7823,8 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (launchRule) throw new Error(launchRule);
 					},
 				});
-				if (nativeWorkerDecision.receipt.selectedTools?.length) {
-					agents[agents.indexOf(nativeAgent)] = { ...nativeAgent, workerSelectedTools: nativeWorkerDecision.receipt.selectedTools };
+				if (nativeWorkerDecision.receipt.selectedTools?.length || nativeWorkerDecision.receipt.toolWarnings?.length) {
+					agents[agents.indexOf(nativeAgent)] = { ...nativeAgent, workerSelectedTools: nativeWorkerDecision.receipt.selectedTools, workerToolWarnings: nativeWorkerDecision.receipt.toolWarnings };
 				}
 				effectiveParams = { ...effectiveParams, model: nativeWorkerDecision.receipt.model, modelOrigin: "explicit" };
 				delegatedThinkingOverride = nativeWorkerDecision.receipt.thinking;

@@ -765,6 +765,27 @@ it("AC2 host tool metadata and selected identities survive immutable authority c
  } finally { f.registration.dispose(); }
 });
 
+it("worker tool warnings are committed as bounded immutable receipt data", async () => {
+ const warnings = ["Tool scoring unavailable."];
+ const f = fixture({ async decide() { return { ...decision, toolWarnings: warnings }; } });
+ try {
+  const result = await prepareWorkerDecision(f.input);
+  assert.equal(result.kind, "committed");
+  if (result.kind !== "committed") return;
+  warnings[0] = "changed";
+  assert.deepEqual(result.receipt.toolWarnings, ["Tool scoring unavailable."]);
+  assert.ok(Object.isFrozen(result.receipt.toolWarnings));
+ } finally { f.registration.dispose(); }
+});
+
+it("worker tool warnings reject unbounded input", async () => {
+ const f = fixture({ async decide() { return { ...decision, toolWarnings: ["x".repeat(513)] }; } });
+ try {
+  const result = await prepareWorkerDecision(f.input);
+  assert.deepEqual(result, { kind: "blocked", reason: "invalid-decision" });
+ } finally { f.registration.dispose(); }
+});
+
 it("AC5 authority cannot select a tool with unobserved source identity", async () => {
  const f = fixture({ async decide() { return { ...decision, selectedTools: [{ name: "search", namespace: "other" }] }; } });
  try {

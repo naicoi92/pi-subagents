@@ -409,6 +409,7 @@ async function runSingleAttempt(
 		tools: agent.tools,
 		callerTools: agent.callerTools,
 		workerSelectedTools: agent.workerSelectedTools,
+		workerToolWarnings: agent.workerToolWarnings,
 		excludeTools: agent.excludeTools,
 		allowNestedSubagents: agent.allowNestedSubagents,
 		descendantAllowedAgents: agent.allowedAgents,

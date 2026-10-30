@@ -67,7 +67,7 @@ export interface WorkerDecisionRequest {
 	readonly policyContext: WorkerDecisionPolicyContext;
 }
 export type WorkerDecision =
-	| (WorkerDecisionPair & { readonly kind: "apply"; readonly requestedThinking?: ThinkingLevel; readonly reason: WorkerDecisionReason; readonly selectedTools?: readonly WorkerToolIdentity[] })
+	| (WorkerDecisionPair & { readonly kind: "apply"; readonly requestedThinking?: ThinkingLevel; readonly reason: WorkerDecisionReason; readonly selectedTools?: readonly WorkerToolIdentity[]; readonly toolWarnings?: readonly string[] })
 	| { readonly kind: "reject"; readonly reason: "cancelled" | "assessment-unavailable" | "baseline-unresolved" | "scope-denied" | "ceiling-denied" | "target-unavailable" };
 export type WorkerDecisionTarget =
 	| (WorkerDecisionRevisions & { readonly kind: "resolved"; readonly model: string; readonly supportedThinking: readonly ThinkingLevel[]; readonly baseline: WorkerDecisionBaseline })
@@ -86,6 +86,7 @@ export interface AppliedWorkerDecision extends WorkerDecisionPair, WorkerDecisio
 	readonly requestedThinking?: ThinkingLevel;
 	readonly reason: WorkerDecisionReason;
 	readonly selectedTools?: readonly WorkerToolIdentity[];
+	readonly toolWarnings?: readonly string[];
 	readonly callerTools?: readonly string[];
 	readonly digest: string;
 }
@@ -246,6 +247,10 @@ function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecis
 		original = { kind: "unresolved", reason: baseline.reason };
 	} else fail("invalid-request");
 	return { definitionRevision, constraintRevision, modelContract, comparison, original };
+}
+function snapshotToolWarnings(value: unknown): readonly string[] {
+	if (!Array.isArray(value) || value.length > 32 || value.some((item) => typeof item !== "string" || !item || item.includes("\0") || Buffer.byteLength(item) > 512)) fail("invalid-decision");
+	return Object.freeze([...value]);
 }
 function snapshotToolList(value: unknown, metadata: boolean, reason: "invalid-request" | "invalid-decision"): WorkerToolMetadata[] {
  if (!Array.isArray(value) || value.length > 256) fail(reason);
@@ -456,6 +461,7 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 			if (!retained && (!("kind" in reply) || reply.kind !== "apply")) fail("invalid-decision");
 			if (!("model" in reply) || !("thinking" in reply) || !isPhysicalModel(reply.model) || !isThinking(reply.thinking) || !REASONS.some((reason) => reason === reply.reason) || ("requestedThinking" in reply && reply.requestedThinking !== undefined && !isThinking(reply.requestedThinking))) fail("invalid-decision");
 			const selectedTools = "selectedTools" in reply && reply.selectedTools !== undefined ? freeze(snapshotToolList(reply.selectedTools, false, "invalid-decision")) : undefined;
+			const toolWarnings = "toolWarnings" in reply && reply.toolWarnings !== undefined ? snapshotToolWarnings(reply.toolWarnings) : undefined;
 			if (selectedTools && selectedTools.some((tool) => !request.facts.tools?.some((candidate) => candidate.name === tool.name && candidate.namespace === tool.namespace && candidate.sourcePath === tool.sourcePath))) fail("invalid-decision");
 			const selected = Object.freeze({ model: reply.model, thinking: reply.thinking });
 			guard();
@@ -463,7 +469,7 @@ async function runPreparation(input: PrepareWorkerDecisionInput, request: Worker
 			check();
 			if (validated.kind !== "valid") fail(validated.reason);
 			if (retained) { guard(); return { kind: "committed", receipt: retained }; }
-			const content = { ...selected, ...(selectedTools !== undefined ? { selectedTools } : {}), ...(request.facts.callerTools !== undefined ? { callerTools: request.facts.callerTools } : {}), logicalLaunchId: request.control.logicalLaunchId, ownerGeneration: owner.generation, definitionRevision: request.policyContext.definitionRevision, constraintRevision: request.policyContext.constraintRevision, reason: reply.reason as WorkerDecisionReason, ...("requestedThinking" in reply && reply.requestedThinking ? { requestedThinking: reply.requestedThinking as ThinkingLevel } : {}) };
+			const content = { ...selected, ...(selectedTools !== undefined ? { selectedTools } : {}), ...(toolWarnings !== undefined ? { toolWarnings } : {}), ...(request.facts.callerTools !== undefined ? { callerTools: request.facts.callerTools } : {}), logicalLaunchId: request.control.logicalLaunchId, ownerGeneration: owner.generation, definitionRevision: request.policyContext.definitionRevision, constraintRevision: request.policyContext.constraintRevision, reason: reply.reason as WorkerDecisionReason, ...("requestedThinking" in reply && reply.requestedThinking ? { requestedThinking: reply.requestedThinking as ThinkingLevel } : {}) };
 			const receipt: AppliedWorkerDecision = freeze({ ...content, digest: digest(content) });
 			// No host callback, serialization or hashing between final authority fence and ledger mutation.
 			guard();
