@@ -218,6 +218,18 @@ describe("pane-native Herdr placement public contracts", { skip: process.platfor
 		let settles = 0; const seen: string[] = []; let liveSeen!: () => void; const live = new Promise<void>((resolve) => { liveSeen = resolve; }); session.subscribe((value) => { if (value.type === "agent_settled") settles++; if (value.type === "tool_execution_start") { seen.push((value as { args: { path: string } }).args.path); if (seen.includes("file-6")) liveSeen(); } });
 		try { await session.prompt("work"); secondSocket!.write(event(6)); await live; assert.equal(dispatches, 1); assert.equal(settles, 1); assert.deepEqual(seen, ["file-5", "file-6"]); assert.equal(session.placementSnapshot.connection, "connected"); assert.deepEqual([bridge.frames.length, next?.frames.length], [0, 0]); } finally { await session.dispose(); await Promise.all([new Promise<void>((resolve) => server1.close(() => resolve())), new Promise<void>((resolve) => server2.close(() => resolve()))]); fs.rmSync(dir, { recursive: true, force: true }); }
 	});
+	it("sends worker warnings on the first successful remote prompt only", async () => {
+		const identity: HerdrRunIdentity = { runId: "run_12345678", machineId: "m1", target: "remote", session: null, workspaceId: "w", tabId: "t", paneId: "p", terminalId: "term", agentName: "agent", nativeSessionId: "native", cwd: "/remote", runtimeDir: "/tmp/run" };
+		const owner = {identity, connection:{}, snapshot:{connection:"connected",state:"ready",identity,revision:0}, async cleanup(){}} as unknown as HerdrPlacedRunOwner;
+		let listener: (frame: any) => void = () => {}; const sent: string[] = []; let fail = true;
+		const bridge = {adopt(callback: typeof listener){listener=callback;return [];}, failure:new Promise<never>(()=>{}), async prepare(id:string, _operation:string, text:string){sent.push(text); if (fail) { fail=false; throw new Error("rejected"); } queueMicrotask(() => listener({type:"settled",requestId:id,nativeSessionId:"native",idle:true,pending:false}));}, close(){}} as unknown as BridgeChannel;
+		const host = {async prompt(){}} as any;
+		const session = new HerdrPiSession(owner, {async close(){}}, bridge, undefined, undefined, runtime, undefined, host, ["selection unavailable"]);
+		await assert.rejects(session.prompt("first"), /rejected/);
+		await session.prompt("retry"); await session.prompt("follow-up");
+		assert.match(sent[0]!, /selection unavailable/); assert.match(sent[1]!, /selection unavailable/); assert.equal(sent[2], "follow-up");
+		assert.deepEqual(session.workerToolWarnings, ["selection unavailable"]); await session.dispose();
+	});
 	it("delivers more than 1,024 live frames to an attached session once, in order, without retaining them", async () => {
 		const mock = mockBridgeSockets();
 		try {

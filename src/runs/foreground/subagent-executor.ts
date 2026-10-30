@@ -8195,7 +8195,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		};
 
 		const withWorkerDecisionBinding = (result: AgentToolResult<Details>): AgentToolResult<Details> => {
-			const warnings = result.details?.results?.flatMap((child) => child.workerToolWarnings ?? []) ?? [];
+			const warnings = [...new Set([...(nativeWorkerDecision?.receipt.toolWarnings ?? []), ...(result.details?.results?.flatMap((child) => child.workerToolWarnings ?? []) ?? [])])];
 			return nativeWorkerDecision
 				? { ...result, ...(warnings.length ? { content: [...result.content, { type: "text" as const, text: `Tool selection warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}` }] } : {}), details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } }
 				: result;

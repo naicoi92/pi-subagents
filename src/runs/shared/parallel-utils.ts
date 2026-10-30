@@ -52,6 +52,7 @@ export interface RunnerSubagentStep {
 	modelResponseAliases?: Record<string, string[]>;
 	tools?: string[];
 	callerTools?: string[];
+	workerToolWarnings?: readonly string[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;
 	/** Resolved selected-agent policy for launches made by this child. */

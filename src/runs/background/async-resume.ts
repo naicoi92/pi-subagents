@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import { isBoundedCallerTools } from "../../shared/caller-tools.ts";
+import { isBoundedWorkerToolWarnings } from "../../shared/worker-decision-authority.ts";
 import * as path from "node:path";
 import { DIRS, RUNNER_LAUNCHER_NAME_PATTERN, type AcceptanceInput, type AsyncStatus, type SteeringRecoveryDescriptor, type SubagentRunMode } from "../../shared/types.ts";
 import type { AgentConfig } from "../../agents/agents.ts";
@@ -326,7 +327,7 @@ export function readAsyncRecoveryDescriptor(asyncDir: string | undefined): Steer
 	if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`Invalid async recovery descriptor '${descriptorPath}': expected an object.`);
 	const parsed = value as Record<string, unknown>;
 	const allowedFields = new Set([
-		"modelResponseAliases", "version", "launchContractDigest", "sourceRunId", "agentContract", "agent", "sessionFile", "cwd", "model", "modelProvider", "modelOverrideFromParent", "modelOrigin", "fast", "thinking", "thinkingCeiling", "tools", "callerTools", "allowNestedSubagents", "allowedAgents", "extensions",
+		"modelResponseAliases", "version", "launchContractDigest", "sourceRunId", "agentContract", "agent", "sessionFile", "cwd", "model", "modelProvider", "modelOverrideFromParent", "modelOrigin", "fast", "thinking", "thinkingCeiling", "tools", "callerTools", "workerToolWarnings", "allowNestedSubagents", "allowedAgents", "extensions",
 		"subagentOnlyExtensions", "mcpDirectTools", "excludeTools", "mutationTools", "systemPrompt", "systemPromptMode", "inheritProjectContext", "inheritGlobalContext", "inheritSkills", "skills",
 		"skillPath", "agentFilePath", "memory", "outputPath", "outputMode", "structuredOutputSchema", "acceptance", "sessionDir", "artifactConfig",
 		"artifactsDir", "maxOutput", "controlConfig", "context", "intercomBridge", "absoluteDeadlineAt", "initialTurnBudget", "initialToolBudget", "maxSubagentDepth", "share", "capabilityCeiling",
@@ -381,6 +382,7 @@ export function readAsyncRecoveryDescriptor(asyncDir: string | undefined): Steer
 	}
 	if (!Number.isInteger(parsed.maxSubagentDepth) || (parsed.maxSubagentDepth as number) < 0) throw new Error(`Invalid async recovery descriptor '${descriptorPath}': maxSubagentDepth must be a non-negative integer.`);
 	if (parsed.callerTools !== undefined && !isBoundedCallerTools(parsed.callerTools)) throw new Error(`Invalid async recovery descriptor '${descriptorPath}': callerTools must contain bounded tool identities.`);
+	if (parsed.workerToolWarnings !== undefined && !isBoundedWorkerToolWarnings(parsed.workerToolWarnings)) throw new Error(`Invalid async recovery descriptor '${descriptorPath}': workerToolWarnings must contain bounded warnings.`);
 	for (const field of ["tools", "excludeTools", "extensions", "subagentOnlyExtensions", "mcpDirectTools", "mutationTools", "skills", "skillPath"] as const) {
 		const item = parsed[field];
 		if (item !== undefined && (!Array.isArray(item) || item.some((entry) => typeof entry !== "string" || !entry.trim()))) throw new Error(`Invalid async recovery descriptor '${descriptorPath}': ${field} must contain non-empty strings.`);
@@ -623,6 +625,7 @@ export function applySteeringRecoveryAgentConfig(agentConfig: AgentConfig, descr
 		maxThinking: intersectThinkingCeilings(descriptor.thinkingCeiling, agentConfig.maxThinking),
 		tools: descriptor.tools ? [...descriptor.tools] : undefined,
 		callerTools: descriptor.callerTools ? [...descriptor.callerTools] : undefined,
+		workerToolWarnings: descriptor.workerToolWarnings ? [...descriptor.workerToolWarnings] : undefined,
 		excludeTools: descriptor.excludeTools ? [...descriptor.excludeTools] : undefined,
 		allowNestedSubagents: descriptor.allowNestedSubagents,
 		allowedAgents: descriptor.allowedAgents === undefined ? undefined : [...descriptor.allowedAgents],

@@ -61,7 +61,7 @@ describe("async recovery descriptor", () => {
 		syncBuiltinESMExports();
 		try {
 			const ceiling = { version: 1 as const, allowedTools: ["read", "grep", "excluded"], denyExtensions: false, sources: ["test"] };
-			const agent = makeAgent("worker", { tools: ["read"], callerTools: ["grep", "excluded", "plugin/tool"], excludeTools: ["excluded"] });
+			const agent = makeAgent("worker", { tools: ["read"], callerTools: ["grep", "excluded", "plugin/tool"], workerToolWarnings: ["Tool scoring unavailable."], excludeTools: ["excluded"] });
 			executeAsyncSingle(runId, {
 				agent: "worker", task: "Work", agentConfig: agent, capabilityCeiling: ceiling,
 				ctx: { pi: { events: { emit() {} } }, cwd: root, currentSessionId: "recovery-caller-tools" },
@@ -74,6 +74,11 @@ describe("async recovery descriptor", () => {
 			const descriptor = readAsyncRecoveryDescriptor(asyncDir)!;
 			const revived = applySteeringRecoveryAgentConfig(makeAgent("worker", { tools: ["bash"] }), descriptor);
 			assert.deepEqual(revived.callerTools, agent.callerTools);
+			assert.deepEqual(revived.workerToolWarnings, agent.workerToolWarnings);
+			for (const invalid of ["bad", [""], ["x".repeat(513)], Array(33).fill("warning")]) {
+				fs.writeFileSync(file, JSON.stringify({ ...persisted, workerToolWarnings: invalid }));
+				assert.throws(() => readAsyncRecoveryDescriptor(asyncDir), /workerToolWarnings/);
+			}
 			const plan = resolvePiLaunchToolPlan({ tools: revived.tools, callerTools: revived.callerTools, excludeTools: revived.excludeTools, capabilityCeiling: descriptor.capabilityCeiling });
 			assert.deepEqual(plan.effectiveToolAllowlist, ["read", "grep"]);
 			assert.deepEqual(plan.toolExtensionPaths, []);

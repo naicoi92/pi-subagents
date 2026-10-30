@@ -26,6 +26,17 @@ test("runner config validation reports required fields without echoing values", 
 	);
 });
 
+test("runner validates bounded worker tool warnings in every step shape", () => {
+ const child = {agent:"worker", task:"work", inheritProjectContext:true, inheritGlobalContext:true, inheritSkills:true};
+ const config = (step: unknown) => ({id:"run", resultPath:"/result", cwd:"/cwd", asyncDir:"/async", placeholder:"pending", steps:[step]});
+ for (const warnings of ["bad", [""], ["x".repeat(513)], Array(33).fill("warning")]) {
+  for (const step of [{...child,workerToolWarnings:warnings}, {parallel:[{...child,workerToolWarnings:warnings}]}, {expand:{}, collect:{}, parallel:{...child,workerToolWarnings:warnings}}]) {
+   assert.throws(() => validateSubagentRunConfig(config(step)), /workerToolWarnings/);
+  }
+ }
+ assert.doesNotThrow(() => validateSubagentRunConfig(config({...child,workerToolWarnings:["warning"]})));
+});
+
 test("startup failure persistence does not overwrite malformed existing evidence", () => {
 	const asyncDir = fs.mkdtempSync(path.join(os.tmpdir(), "runner-startup-failure-"));
 	const statusPath = path.join(asyncDir, "status.json");

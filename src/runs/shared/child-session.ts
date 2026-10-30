@@ -705,10 +705,10 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			let firstPrompt = true;
 			const child: ChildSession = {
 				subscribe: (listener) => session.subscribe((event) => listener(event as unknown as ChildSessionEvent)),
-				prompt: (text) => {
+				prompt: async (text) => {
 					const warnings = firstPrompt && workerWarnings.length ? `Tool selection warnings:\n${workerWarnings.map((warning) => `- ${warning}`).join("\n")}\n\n` : "";
+					await session.prompt(`${warnings}${text}`);
 					firstPrompt = false;
-					return session.prompt(`${warnings}${text}`);
 				},
 				workerToolWarnings: workerWarnings,
 				...(commands ? { finishCommands: () => commands.finish() } : {}),

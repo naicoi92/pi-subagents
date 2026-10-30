@@ -302,6 +302,26 @@ it("NAT-COMPARISON-missing-parent: missing parent remains unresolved instead of 
 	});
 });
 
+it("async authority warning reaches parent response and serialized child launch", async (t) => {
+ const f = fixture(); let launchConfig: any;
+ t.mock.method(childProcess, "spawn", (_command: string, args?: readonly string[], options?: childProcess.SpawnOptions) => {
+  launchConfig = JSON.parse(fs.readFileSync(String(options?.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args?.at(-1)), "utf8"));
+  throw new Error("intercepted fixture spawn");
+ }); syncBuiltinESMExports();
+ const registration = owner(f, {async decide() {return {...selected, toolWarnings:["Worker tool selection is unavailable."]};}});
+ try {
+  const result = await f.executor.execute("warning-async", {agent:f.agent.name, task:"Review", async:true, artifacts:false, acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  assert.match(JSON.stringify(result.content), /Worker tool selection is unavailable/);
+  assert.deepEqual(launchConfig.steps[0].workerToolWarnings, ["Worker tool selection is unavailable."]);
+  const descriptor = readAsyncRecoveryDescriptor(launchConfig.asyncDir)!;
+  assert.deepEqual(descriptor.workerToolWarnings, ["Worker tool selection is unavailable."]);
+  const { buildRunnerChildLaunch } = await import("../../src/runs/background/runner-child-launch.ts");
+  const child = buildRunnerChildLaunch(launchConfig.steps[0], {cwd:f.root,id:"warning-async",flatIndex:0}, {sessionEnabled:false,watchdogStatus:()=>{}});
+  assert.deepEqual(child.session.workerToolWarnings, ["Worker tool selection is unavailable."]);
+  fs.rmSync(launchConfig.asyncDir, {recursive:true,force:true});
+ } finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
 it("N02-async: actual direct async commits exact pair before descriptor and intercepted spawn", async (t) => {
 	const f = fixture(); let calls = 0; let launchConfig: any; let asyncDir = "";
 	const spawn = t.mock.method(childProcess, "spawn", (_command: string, args?: readonly string[], options?: childProcess.SpawnOptions) => {
@@ -1087,12 +1107,14 @@ it("foreground authority warnings reach the child and parent without a selected 
  f.agent.tools = ["read"];
  const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!, "dist/index.js"));
  const { createDefaultChildSessionFactory } = await import("../../src/runs/shared/child-session.ts");
- let prompt = "";
- const real = createDefaultChildSessionFactory({loadPiCodingAgent: async () => ({...host, createAgentSession: async (options: any) => { const created = await host.createAgentSession(options); created.session.prompt = async (text: string) => { prompt = text; }; return created; }}) as any});
+ const prompts: string[] = [];
+ const real = createDefaultChildSessionFactory({loadPiCodingAgent: async () => ({...host, createAgentSession: async (options: any) => { const created = await host.createAgentSession(options); created.session.prompt = async (text: string) => { prompts.push(text); if (prompts.length === 1) throw new Error("first prompt failed"); }; return created; }}) as any});
  const fake = childSessionFactory();
  setChildSessionFactory({async create(input) {
   const child = await real.create({...input, model:undefined, parentProviderRegistry:undefined, storage:{kind:"memory"}});
+  await assert.rejects(child.prompt("First attempt"), /first prompt failed/);
   await child.prompt("Task: Review");
+  await child.prompt("Follow-up");
   const warnings = child.workerToolWarnings;
   await child.dispose(); const scripted = await fake.create(input);
   return {...scripted, workerToolWarnings:warnings};
@@ -1101,7 +1123,9 @@ it("foreground authority warnings reach the child and parent without a selected 
  try {
   const result = await f.executor.executeDelegated("authority-warning", {agent:f.agent.name,task:"Review",async:false,artifacts:false,acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
   assert.equal(result.isError,undefined,JSON.stringify(result.content));
-  assert.match(prompt, /Worker tool scores unavailable/);
+  assert.match(prompts[0]!, /Worker tool scores unavailable/);
+  assert.match(prompts[1]!, /Worker tool scores unavailable/);
+  assert.equal(prompts[2], "Follow-up");
   assert.match(JSON.stringify(result.content), /Worker tool scores unavailable/);
  } finally {registration.dispose();mock.uninstall();}
 });

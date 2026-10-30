@@ -248,8 +248,11 @@ function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecis
 	} else fail("invalid-request");
 	return { definitionRevision, constraintRevision, modelContract, comparison, original };
 }
+export function isBoundedWorkerToolWarnings(value: unknown): value is string[] {
+	return Array.isArray(value) && value.length <= 32 && value.every((item) => typeof item === "string" && !!item && !item.includes("\0") && Buffer.byteLength(item) <= 512);
+}
 function snapshotToolWarnings(value: unknown): readonly string[] {
-	if (!Array.isArray(value) || value.length > 32 || value.some((item) => typeof item !== "string" || !item || item.includes("\0") || Buffer.byteLength(item) > 512)) fail("invalid-decision");
+	if (!isBoundedWorkerToolWarnings(value)) fail("invalid-decision");
 	return Object.freeze([...value]);
 }
 function snapshotToolList(value: unknown, metadata: boolean, reason: "invalid-request" | "invalid-decision"): WorkerToolMetadata[] {
