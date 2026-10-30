@@ -130,6 +130,8 @@ test("published extension APIs use supported package entrypoints", async () => {
 		"./workflow-resources": "./src/api/workflow-resources.ts",
 		"./required-child-extensions": "./src/api/required-child-extensions.ts",
 		"./delegation": "./src/api/delegation.ts",
+		"./worker-decision-authority": "./src/api/worker-decision-authority.ts",
+		"./worker-presentation": "./src/api/worker-presentation.ts",
 		"./preflight": "./src/api/preflight.ts",
 		"./control-channel": "./src/api/control-channel.ts",
 		"./intercom-bridge": "./src/api/intercom-bridge.ts",
