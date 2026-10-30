@@ -7763,7 +7763,15 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					sessionId: requestSessionId, routing: workerDecisionRouting,
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
 					agent: nativeAgent, task: effectiveParams.task ?? "", callerTools,
-					toolSelection: !effectiveAsync && !(effectiveParams.machine ?? nativeAgent.machine) && !launchCapabilityCeiling()?.denyExtensions && supportsWorkerToolSelection(nativeAgent) ? "supported" : "unsupported",
+					toolSelection: (() => {
+						if (effectiveAsync || (effectiveParams.machine ?? nativeAgent.machine) || launchCapabilityCeiling()?.denyExtensions || !supportsWorkerToolSelection(nativeAgent)) return "unsupported";
+						try {
+							const skills = normalizeSkillInput(effectiveParams.skill);
+							const resolved = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
+							resolvePiLaunchToolPlan({ tools: nativeAgent.tools, callerTools: nativeAgent.callerTools, workerSelectedTools: [], excludeTools: nativeAgent.excludeTools, mcpDirectTools: nativeAgent.mcpDirectTools, cwd: effectiveCwd, requireReadTool: resolved.resolved.length > 0, structuredOutput: Boolean(effectiveParams.outputSchema), capabilityCeiling: launchCapabilityCeiling(), agentName: nativeAgent.name, runtimeSnapshotHost: deps.pi });
+							return "supported";
+						} catch { return "unsupported"; }
+					})(),
 					...projectHostToolMetadata(deps.pi.getAllTools?.()), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
 					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",
