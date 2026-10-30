@@ -102,6 +102,51 @@ it("reports unsupported tool selection when structured output is outside the cei
  });
 });
 
+it("reports unsupported selection when a resolved skill requires excluded read", async () => {
+ await withForeground(async (f) => {
+  const skillDir = path.join(f.root, "skills", "local");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: local\ndescription: local skill\n---\nbody\n");
+  f.agent.tools = ["read"]; f.agent.excludeTools = ["read"]; f.agent.skills = ["local"]; f.agent.skillPath = [path.join(f.root, "skills")];
+  let observed: unknown;
+  const registration = owner(f, { async decide(request) { observed = request.facts.toolSelection; return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; } });
+  try { await launch(f); assert.equal(observed, "unsupported"); } finally { registration.dispose(); }
+ });
+});
+
+it("reports unsupported selection when structured output is excluded", async () => {
+ await withForeground(async (f) => {
+  f.agent.tools = ["read"]; f.agent.excludeTools = ["structured_output"];
+  let observed: unknown;
+  const registration = owner(f, { async decide(request) { observed = request.facts.toolSelection; return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; } });
+  try {
+   await f.executor.executeDelegated("structured-exclusion", { agent: f.agent.name, task: "Work", async: false, artifacts: false, acceptance: false, outputSchema: { type: "object", properties: {} } }, new AbortController().signal, undefined, f.ctx as any);
+   assert.equal(observed, "unsupported");
+  } finally { registration.dispose(); }
+ });
+});
+
+it("reports unsupported selection for asynchronous launches", async () => {
+ const f = fixture(); f.agent.tools = ["read"];
+ let observed: unknown;
+ const registration = owner(f, { async decide(request) { observed = request.facts.toolSelection; return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; } });
+ const t = await import("node:test");
+ try {
+  const mock = t.mock.method(childProcess, "spawn", () => { throw new Error("captured spawn"); }); syncBuiltinESMExports();
+  await f.executor.executeDelegated("async-fact", { agent: f.agent.name, task: "Work", async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
+  assert.equal(observed, "unsupported"); mock.mock.restore(); syncBuiltinESMExports();
+ } finally { registration.dispose(); }
+});
+
+it("reports unsupported selection for remote launches", async () => {
+ await withForeground(async (f) => {
+  f.agent.tools = ["read"]; f.agent.machine = "remote";
+  let observed: unknown;
+  const registration = owner(f, { async decide(request) { observed = request.facts.toolSelection; return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; } });
+  try { await launch(f); assert.equal(observed, "unsupported"); } finally { registration.dispose(); }
+ });
+});
+
 it("N01-foreground: actual executor invokes authority before scripted factory with authored facts", async () => {
 	const f = fixture(); const mock = createMockPi(); mock.install();
 	let calls = 0; const applied: AppliedWorkerDecision[] = [];
