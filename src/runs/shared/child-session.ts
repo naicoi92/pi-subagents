@@ -20,7 +20,7 @@ import { resolvePackageSubpath } from "../background/runner-aliases.ts";
 import { PI_CODING_AGENT_PACKAGE, resolveHostPiSdkBinding } from "./pi-spawn.ts";
 import type { ChildRuntimeConfig } from "./child-runtime-config.ts";
 import type { RequiredChildExtensionSnapshot } from "../../shared/required-child-extensions.ts";
-import type { HerdrMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
+import type { PlacementMachineReference, HerdrRemoteGitStatus } from "../../shared/types.ts";
 
 export interface ChildSessionEvent {
 	type: string;
@@ -56,7 +56,7 @@ export type ChildSessionStorage =
 export interface ChildSessionLaunch {
 	cwd: string;
 	/** Resolved pane-native placement. Local launches omit this field. */
-	machine?: HerdrMachineReference;
+	machine?: PlacementMachineReference;
 	/** The launching session's project trust; undefined keeps Pi's default for hosts without trust. */
 	projectTrusted?: boolean;
 	/** Process-local provider source owned by the invoking foreground parent. */
@@ -98,6 +98,12 @@ export interface ChildSessionLaunch {
 	 * window one at a time. An undefined value removes the variable.
 	 */
 	processEnv?: Record<string, string | undefined>;
+	/**
+	 * Restore the hosting process's previous values of `processEnv` once that
+	 * window ends, so a child hosted in the parent's own process leaves the
+	 * parent's environment as it found it.
+	 */
+	restoreProcessEnv?: boolean;
 	/** The typed runtime config the hooks were built from; informational for factories. */
 	runtime: ChildRuntimeConfig;
 	onExtensionError?: (error: ChildSessionExtensionError) => void;
@@ -123,10 +129,12 @@ export interface ChildSession {
 	readonly modelId: string | undefined;
 	/** Provider id of the selected model when this child inherited that provider from the parent's registry instead of loading its extension. */
 	readonly inheritedProvider?: string;
+	/** Provider id of the selected model when an extension in this child's model runtime registered that provider, at load or later (e.g. on `session_start`). */
+	readonly claimedProvider?: string;
 	/** Live provider/id of the selected model when Pi marks it virtual (`api === "pi-virtual"`); assistant messages then name the dispatched physical model. */
 	readonly virtualModelId?: string;
 	readonly contextWindow?: number;
-	readonly machineEvidence?: { machineId: string; initial?: HerdrRemoteGitStatus; final?: HerdrRemoteGitStatus };
+	readonly machineEvidence?: { provider: PlacementMachineReference["provider"]; machineId: string; initial?: HerdrRemoteGitStatus; final?: HerdrRemoteGitStatus };
 	/** Event-updated pane-native status; reading it performs no network work. */
 	readonly placementSnapshot?: unknown;
 	/** Set by the foreground host once the run detached; `factory.dispose()` leaves such children running. */
@@ -211,7 +219,7 @@ function createRequiredChildExtensionIdentity(requiredPaths: ReadonlySet<string>
 	const identities = new Set(aliases.values());
 	return (extensionPath) => {
 		const known = aliases.get(extensionPath);
-		if (known !== undefined || identities.size === 0) return known;
+		if (known !== undefined) return known;
 		const identity = childExtensionFileIdentity(extensionPath);
 		if (identity === undefined || !identities.has(identity)) return undefined;
 		// Retain the alias even if the extension removes its file before reporting a failure.
@@ -270,12 +278,15 @@ function resetExtensionCacheOnReload(loader: object): boolean {
 	return true;
 }
 
-function applyProcessEnv(values: Record<string, string | undefined> | undefined): void {
-	if (!values) return;
+/** Applies `values` to `process.env` and returns a function that puts back the values they replaced. */
+function applyProcessEnv(values: Record<string, string | undefined> | undefined): () => void {
+	if (!values) return () => {};
+	const previous = Object.fromEntries(Object.keys(values).map((name) => [name, process.env[name]]));
 	for (const [name, value] of Object.entries(values)) {
 		if (value === undefined) delete process.env[name];
 		else process.env[name] = value;
 	}
+	return () => applyProcessEnv(previous);
 }
 
 /**
@@ -528,7 +539,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 			// file it names, after Pi's Unicode-space normalization. A required extension that failed under an
 			// unmatched spelling is still rejected by the missing-identity check after loading.
 			const isRequiredSource = (extensionPath: string) => requiredPaths.size > 0 && requiredExtensionIdentity(
-				resolvedExtensionPaths.get(extensionPath) ?? (path.isAbsolute(extensionPath) ? extensionPath.replace(PI_UNICODE_SPACES, " ") : extensionPath),
+				resolvedExtensionPaths.get(extensionPath) ?? extensionPath.replace(PI_UNICODE_SPACES, " "),
 			) !== undefined;
 			const loader = new pi.DefaultResourceLoader({
 				cwd: launch.cwd,
@@ -559,7 +570,11 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					await commands?.shutdown();
 					const runner = session.extensionRunner;
 					if (runner.hasHandlers("session_shutdown")) {
-						await Promise.race([runner.emit({ type: "session_shutdown", reason: "quit" }), new Promise<void>((resolve) => setTimeout(resolve, shutdownTimeoutMs).unref?.())]);
+						// Ref'd so a detached runner with nothing else pending stays alive until the bound
+						// ends and still publishes its result; cleared as soon as the handlers finish.
+						let bound: ReturnType<typeof setTimeout> | undefined;
+						await Promise.race([runner.emit({ type: "session_shutdown", reason: "quit" }), new Promise<void>((resolve) => { bound = setTimeout(resolve, shutdownTimeoutMs); })])
+							.finally(() => clearTimeout(bound));
 					}
 				} catch (error) {
 					launch.onExtensionError?.({ extensionPath: "<session>", event: "session_shutdown", error });
@@ -568,8 +583,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				}
 			};
 			let inheritedProviders = new Set<string>();
-			const open = async () => {
-				applyProcessEnv(launch.processEnv);
+			const openSession = async () => {
 				if (!resetExtensionCacheOnReload(loader) && (launch.ambientExtensions || launch.extensionPaths.length)) launch.onExtensionError?.({ extensionPath: "<loader>", event: "load", error: new Error("pi's extension cache reset is unavailable; extensions loaded into this child share module state with other sessions in this process.") });
 				await loader.reload();
 				if (requiredPaths.size > 0) for (const extension of loader.getExtensions().extensions) resolvedExtensionPaths.set(extension.path, extension.resolvedPath);
@@ -580,7 +594,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				if (requiredPaths.size > 0) {
 					const loadedIdentities = new Set(loader.getExtensions().extensions.map(({ resolvedPath }) => requiredExtensionIdentity(resolvedPath)));
 					const missing = [...requiredPaths].filter((extensionPath) => !loadedIdentities.has(requiredExtensionIdentity(extensionPath)));
-					if (missing.length) throw new Error(`Required child extension failed to load: missing loaded identities for ${missing.join(", ")}`);
+					if (missing.length) throw new Error(`Required child extension failed to load: ${missing.join(", ")}`);
 				}
 				if (launch.parentProviderRegistry) inheritedProviders = inheritParentProviders(modelRuntime, launch.parentProviderRegistry, queued.claimedProviderIds, launch.onExtensionError);
 				if (queued.registered || inheritedProviders.size > 0) {
@@ -677,6 +691,14 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				}
 				return session;
 			};
+			const open = async () => {
+				const restoreEnv = applyProcessEnv(launch.processEnv);
+				try {
+					return await openSession();
+				} finally {
+					if (launch.restoreProcessEnv) restoreEnv();
+				}
+			};
 			const opened = loading.catch(() => {}).then(open);
 			loading = opened;
 			const session = await opened;
@@ -731,6 +753,7 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 				get sessionId() { return session.sessionId; },
 				get modelId() { return session.model ? `${session.model.provider}/${session.model.id}` : undefined; },
 				get inheritedProvider() { return session.model && inheritedProviders.has(session.model.provider) ? session.model.provider : undefined; },
+				get claimedProvider() { return session.model && !inheritedProviders.has(session.model.provider) && modelRuntime.getRegisteredProviderIds().includes(session.model.provider) ? session.model.provider : undefined; },
 				get virtualModelId() { return session.model?.api === "pi-virtual" ? `${session.model.provider}/${session.model.id}` : undefined; },
 				get contextWindow() { return session.model?.contextWindow; },
 			};
