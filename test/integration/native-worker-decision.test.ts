@@ -1314,6 +1314,29 @@ for (const mode of ["missing-callable-api", "extra-callable"] as const) it(`actu
  } finally {registration.dispose();mock.uninstall();}
 });
 
+it("selected tool that is not callable after startup is omitted with a warning, not a failed launch", {skip: !process.env.PI_SUBAGENTS_NATIVE_PI_ROOT && "requires Pi 1.4.0 host"}, async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
+ const source = path.join(f.root,"selected.mjs");
+ fs.writeFileSync(source, `export default pi => pi.registerTool({name:'plugin_selected',label:'Selected',description:'Selected',parameters:{type:'object',properties:{}},async execute(){return {content:[{type:'text',text:'ok'}],details:{}}}});`);
+ f.agent.tools = ["read"]; f.host.getAllTools = () => [{name:"plugin_selected",description:"Selected",sourceInfo:{path:source}}];
+ const host = await import(path.join(process.env.PI_SUBAGENTS_NATIVE_PI_ROOT!,"dist/index.js"));
+ const {createDefaultChildSessionFactory} = await import("../../src/runs/shared/child-session.ts");
+ const real = createDefaultChildSessionFactory({loadPiCodingAgent:async()=>({...host,createAgentSession:async(options:any)=>{
+  const result = await host.createAgentSession(options); const session = result.session;
+  // An extension (for example a lazy loader) deactivated the tool during session_start.
+  const callable = session.getCallableToolNames.bind(session); session.getCallableToolNames = () => callable().filter((name:string) => name !== "plugin_selected");
+  return result;
+ }}) as any});
+ setChildSessionFactory({create:(input)=>real.create({...input,model:undefined,parentProviderRegistry:undefined,storage:{kind:"memory"}}),dispose:()=>real.dispose()});
+ const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"plugin_selected",sourcePath:source}]} as WorkerDecision;}});
+ try {
+  const result = await f.executor.executeDelegated("not-callable",{agent:f.agent.name,task:"Review",async:false,artifacts:false,acceptance:false},new AbortController().signal,undefined,f.ctx as any);
+  const text = JSON.stringify(result.content);
+  assert.doesNotMatch(text, /refusing unsafe launch/);
+  assert.match(text, /Selected tool 'plugin_selected' is not callable after startup; omitted/);
+ } finally {registration.dispose();mock.uninstall();}
+});
+
 it("async launch result carries the worker launch receipt without a false unavailable reason", async (t) => {
  const f = fixture();
  t.mock.method(childProcess, "spawn", () => { throw new Error("intercepted fixture spawn"); }); syncBuiltinESMExports();

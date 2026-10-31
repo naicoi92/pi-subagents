@@ -677,10 +677,13 @@ export function createDefaultChildSessionFactory(options: DefaultChildSessionFac
 					const all = session.getAllTools();
 					for (const selected of selectedTools) {
 						const tool = all.find((candidate) => candidate.name === selected.name);
-						if (tool && (tool.sourceInfo.path !== selected.sourcePath || tool.namespace?.name !== selected.namespace || !callable.has(selected.name))) {
+						// A different source is a safety violation. A tool that merely is not callable is not: extensions that manage their
+						// own active tools (for example a lazy loader) may deactivate it during startup, so omit it and say so.
+						if (tool && (tool.sourceInfo.path !== selected.sourcePath || tool.namespace?.name !== selected.namespace)) {
 							await shutdownSession(session);
-							throw new Error(`Selected tool '${selected.name}' changed source or is not callable after startup; refusing unsafe launch.`);
+							throw new Error(`Selected tool '${selected.name}' changed source after startup; refusing unsafe launch.`);
 						}
+						if (tool && !callable.has(selected.name) && !workerWarnings.some((warning) => warning.includes(`'${selected.name}'`))) workerWarnings.push(`Selected tool '${selected.name}' is not callable after startup; omitted.`);
 						if (!tool && !workerWarnings.some((warning) => warning.includes(`'${selected.name}'`))) workerWarnings.push(`Selected tool '${selected.name}' missing after startup; omitted.`);
 					}
 				}
