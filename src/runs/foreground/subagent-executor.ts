@@ -1,5 +1,5 @@
 import { projectHostToolMetadata } from "../shared/native-worker-decision.ts";
-import { formatWorkerLaunchReceipt, toolSelectionUnavailableReason } from "../shared/worker-launch-receipt.ts";
+import { formatWorkerLaunchReceipt, summarizeToolSelection, toolSelectionUnavailableReason, unselectedTools } from "../shared/worker-launch-receipt.ts";
 import type { SubagentAttachedForegroundCompleteEvent } from "../../shared/types.ts";
 import { issueWorkerPresentationBinding } from "../../shared/worker-presentation.ts";
 import { randomUUID } from "node:crypto";
@@ -7862,6 +7862,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 		let nativeWorkerDecision: NativeWorkerDecision | undefined;
 		let toolSelectionUnavailable: string | undefined;
 		let hostToolsIncomplete = false;
+		let hostInventoryNames: string[] = [];
 		const nativeAgent = hasSingle ? agents.find((agent) => agent.name === effectiveParams.agent) : undefined;
 		if (nativeAgent && (!nativeAgent.runner || nativeAgent.runner.type === "pi") && workerDecisionRouting.kind !== "never-owned") {
 			try {
@@ -7895,7 +7896,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						toolSelectionUnavailable = toolSelectionUnavailableReason({ remote, denyExtensions, baselineSupported, probeError });
 						return toolSelectionUnavailable === undefined ? "supported" : "unsupported";
 					})(),
-					...(() => { const projected = projectHostToolMetadata(deps.pi.getAllTools?.()); hostToolsIncomplete = projected.toolsIncomplete === true; return projected; })(), context: contextPolicy.contextForAgent(nativeAgent.name),
+					...(() => { const projected = projectHostToolMetadata(deps.pi.getAllTools?.()); hostToolsIncomplete = projected.toolsIncomplete === true; hostInventoryNames = (projected.availableTools ?? []).map((tool) => tool.name); return projected; })(), context: contextPolicy.contextForAgent(nativeAgent.name),
 					originalModel: originalWithThinking, originalThinking,
 					originalProvenance: callerModelExplicit ? "explicit-launch" : "host-effective",
 					comparison: comparisonModel
@@ -7942,8 +7943,13 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 						if (launchRule) throw new Error(launchRule);
 					},
 				});
-				if (nativeWorkerDecision.receipt.selectedTools?.length || nativeWorkerDecision.receipt.toolWarnings?.length) {
-					agents[agents.indexOf(nativeAgent)] = { ...nativeAgent, workerSelectedTools: nativeWorkerDecision.receipt.selectedTools, workerToolWarnings: nativeWorkerDecision.receipt.toolWarnings };
+				// The child must see what the selector granted and left out, not only failures.
+				const selectionSummary = toolSelectionUnavailable === undefined && hostInventoryNames.length
+					? summarizeToolSelection({ selected: nativeWorkerDecision.receipt.selectedTools?.map((tool) => tool.name) ?? [], inventory: unselectedTools(hostInventoryNames, [...(nativeAgent.tools ?? []), ...(nativeWorkerDecision.receipt.callerTools ?? [])]) })
+					: undefined;
+				if (nativeWorkerDecision.receipt.selectedTools?.length || nativeWorkerDecision.receipt.toolWarnings?.length || selectionSummary) {
+					const childWarnings = [...(selectionSummary ? [selectionSummary] : []), ...(nativeWorkerDecision.receipt.toolWarnings ?? [])];
+					agents[agents.indexOf(nativeAgent)] = { ...nativeAgent, workerSelectedTools: nativeWorkerDecision.receipt.selectedTools, workerToolWarnings: childWarnings.length ? childWarnings : undefined };
 				}
 				effectiveParams = { ...effectiveParams, model: nativeWorkerDecision.receipt.model, modelOrigin: "explicit" };
 				delegatedThinkingOverride = nativeWorkerDecision.receipt.thinking;
@@ -8319,7 +8325,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 			const blocks = [formatWorkerLaunchReceipt({
 				agent: nativeAgent.name, context: contextPolicy.contextForAgent(nativeAgent.name), async: effectiveAsync,
 				baselineTools: nativeAgent.tools, receipt: nativeWorkerDecision.receipt,
-				toolSelectionUnavailable, toolsIncomplete: hostToolsIncomplete,
+				toolSelectionUnavailable, toolsIncomplete: hostToolsIncomplete, inventoryTools: hostInventoryNames,
 			})];
 			if (warnings.length) blocks.push(`Tool selection warnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}`);
 			return { ...result, content: [...result.content, { type: "text" as const, text: blocks.join("\n\n") }], details: { ...result.details, runId: effectiveAsync ? asyncRunId : runId, toolCallId: originToolCallId } };

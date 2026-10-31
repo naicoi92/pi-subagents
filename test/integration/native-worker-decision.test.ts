@@ -1329,3 +1329,42 @@ it("async launch result carries the worker launch receipt without a false unavai
   assert.doesNotMatch(text, /do not support tool selection/);
  } finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
+
+it("launch receipt and child warnings list selected and not-selected tools", async () => {
+ await withForeground(async (f) => {
+  const source = path.join(f.root, "chosen.mjs");
+  f.agent.tools = ["read"];
+  f.host.getAllTools = () => [
+   { name: "read", description: "Read" },
+   { name: "plugin_chosen", description: "Chosen", sourceInfo: { path: source } },
+   { name: "plugin_left", description: "Left out", sourceInfo: { path: "/plugin/left.mjs" } },
+  ];
+  const registration = owner(f, { async decide() { return { ...selected, selectedTools: [{ name: "plugin_chosen", sourcePath: source }] } as WorkerDecision; } });
+  try {
+   const result = await launch(f);
+   const text = JSON.stringify(result.content);
+   assert.match(text, /auto-selected, 1\): plugin_chosen/);
+   assert.match(text, /not selected, 1\): plugin_left/);
+   assert.doesNotMatch(text, /not selected[^"]*read/);
+  } finally { registration.dispose(); }
+ });
+});
+
+it("child launch carries the selected and not-selected tool summary", async () => {
+ const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({ output: "done" });
+ const source = path.join(f.root, "chosen.mjs");
+ f.agent.tools = ["read"];
+ f.host.getAllTools = () => [
+  { name: "read", description: "Read" },
+  { name: "plugin_chosen", description: "Chosen", sourceInfo: { path: source } },
+  { name: "plugin_left", description: "Left out", sourceInfo: { path: "/plugin/left.mjs" } },
+ ];
+ const fake = childSessionFactory();
+ let seen: readonly string[] | undefined;
+ setChildSessionFactory({ async create(input) { seen = input.workerToolWarnings; return fake.create(input); }, dispose: async () => { await fake.dispose(); } });
+ const registration = owner(f, { async decide() { return { ...selected, selectedTools: [{ name: "plugin_chosen", sourcePath: source }] } as WorkerDecision; } });
+ try {
+  await launch(f);
+  assert.ok(seen?.some((line) => /^Tools selected \(1\): plugin_chosen; not selected \(1\): plugin_left$/.test(line)), JSON.stringify(seen));
+ } finally { registration.dispose(); mock.uninstall(); }
+});

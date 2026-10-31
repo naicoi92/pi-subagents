@@ -9,6 +9,23 @@ export interface WorkerLaunchReceiptInput {
 	/** Why automatic tool selection could not run; undefined when it was supported. */
 	readonly toolSelectionUnavailable?: string;
 	readonly toolsIncomplete?: boolean;
+	/** Every host tool name the selector could see; not-selected = inventory minus granted tools. */
+	readonly inventoryTools?: readonly string[];
+}
+
+const RECEIPT_LIST_LIMIT = 40;
+const SUMMARY_BYTE_LIMIT = 512;
+
+/** Inventory names that were neither selected, requested by the caller, nor in the agent baseline. */
+export function unselectedTools(inventory: readonly string[] | undefined, granted: readonly string[]): string[] {
+	const taken = new Set(granted);
+	return [...new Set(inventory ?? [])].filter((name) => !taken.has(name));
+}
+
+/** Comma list capped at `limit` names with an explicit remainder, never a silent cut. */
+function boundedList(names: readonly string[], limit: number): string {
+	if (names.length <= limit) return names.join(", ");
+	return `${names.slice(0, limit).join(", ")} (+${names.length - limit} more)`;
 }
 
 /** Explicit, task-free launch facts shown to the parent: who runs, on what, with which tools. */
@@ -25,10 +42,31 @@ export function formatWorkerLaunchReceipt(input: WorkerLaunchReceiptInput): stri
 		`- Tools (agent baseline): ${baseline}`,
 	];
 	if (caller.length) lines.push(`- Tools (caller): ${caller.join(", ")}`);
-	if (selected.length) lines.push(`- Tools (auto-selected): ${selected.join(", ")}`);
+	if (selected.length) lines.push(`- Tools (auto-selected, ${selected.length}): ${selected.join(", ")}`);
 	else lines.push(`- Tools (auto-selected): none${input.toolSelectionUnavailable ? ` — ${input.toolSelectionUnavailable}` : ""}`);
+	const rejected = unselectedTools(input.inventoryTools, [...selected, ...caller, ...(input.baselineTools ?? [])]);
+	if (rejected.length) lines.push(`- Tools (not selected, ${rejected.length}): ${boundedList(rejected, RECEIPT_LIST_LIMIT)}`);
 	if (input.toolsIncomplete) lines.push("- Tool inventory: some host tool records were structurally invalid and omitted");
 	return lines.join("\n");
+}
+
+/**
+ * One line for the child's first prompt. Tool selection state travels through the bounded
+ * warning channel, so the line is truncated at a name boundary below its byte budget.
+ */
+export function summarizeToolSelection(input: { selected: readonly string[]; inventory: readonly string[] }): string {
+	const rejected = unselectedTools(input.inventory, input.selected);
+	const head = `Tools selected (${input.selected.length}): ${input.selected.join(", ") || "none"}; not selected (${rejected.length}): `;
+	let line = head;
+	let shown = 0;
+	for (const name of rejected) {
+		const next = `${line}${shown ? ", " : ""}${name}`;
+		const suffix = ` (+${rejected.length - shown - 1} more)`;
+		if (Buffer.byteLength(next + suffix) > SUMMARY_BYTE_LIMIT) break;
+		line = next;
+		shown++;
+	}
+	return shown < rejected.length ? `${line} (+${rejected.length - shown} more)` : line;
 }
 
 /** First reason, in executor precedence, why automatic tool selection is unavailable. */
