@@ -794,7 +794,10 @@ for (const source of ["project", "runtime"] as const) it(`NAT-NAME-executor-${so
 		let calls = 0;
 		const registration = owner(f, { async decide(request) {
 			calls++;
-			assert.deepEqual(request.facts, { task: "Act as unrelated-junior", toolSelection: "unsupported", role: { name: "package/specialized-reviewer", description: "", provenance: "resolved-agent" } });
+			const { agent, ...rest } = request.facts;
+			assert.deepEqual(rest, { task: "Act as unrelated-junior", toolSelection: "unsupported", role: { name: "package/specialized-reviewer", description: "", provenance: "resolved-agent" } });
+			assert.equal(agent?.name, "package/specialized-reviewer");
+			assert.doesNotMatch(JSON.stringify({ role: request.facts.role, agent }), /PRIVATE SYSTEM PROMPT|caller-label|junior/);
 			assert.equal(mock.sessions.length, 0);
 			return selected;
 		} });

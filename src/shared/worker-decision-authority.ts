@@ -43,7 +43,29 @@ export interface WorkerDecisionFacts {
 		readonly provenance: "resolved-agent" | "authored-task";
 	};
 	readonly capabilities?: readonly { readonly description: string; readonly provenance: "host" | "resolved-agent" }[];
+	/** Declared definition metadata of the resolved agent. Bounded and body-free: never the system prompt text. */
+	readonly agent?: WorkerAgentMetadata;
 }
+/** What an agent file declares about itself, projected for assessment. Lists are capped; the prompt is reduced to a length. */
+export interface WorkerAgentMetadata {
+	readonly name: string;
+	readonly source?: string;
+	readonly tools?: readonly string[];
+	readonly excludeTools?: readonly string[];
+	readonly skills?: readonly string[];
+	readonly mutationTools?: readonly string[];
+	readonly allowedAgents?: readonly string[];
+	readonly allowNestedSubagents?: boolean;
+	readonly defaultContext?: string;
+	readonly model?: string;
+	readonly thinking?: string | false;
+	readonly interactive?: boolean;
+	readonly systemPromptMode?: string;
+	/** Length of the system prompt body in characters. The body itself is never sent. */
+	readonly systemPromptChars?: number;
+}
+const MAX_AGENT_METADATA_ITEMS = 64;
+const MAX_AGENT_METADATA_TEXT = 256;
 /** Model identity for policy comparison only, never an execution-retention pair. */
 export type WorkerDecisionComparison =
 	| { readonly kind: "resolved"; readonly model: string; readonly provenance: "explicit-caller" | "parent" }
@@ -297,6 +319,17 @@ function snapshotCallerTools(value: unknown): string[] {
  if (!isBoundedCallerTools(value)) fail("invalid-request");
  return [...value];
 }
+function snapshotAgentMetadata(value: WorkerAgentMetadata): WorkerAgentMetadata {
+	const short = (v: unknown): string | undefined => typeof v === "string" && v && !v.includes("\0") ? v.slice(0, MAX_AGENT_METADATA_TEXT) : undefined;
+	const list = (v: unknown): string[] | undefined => Array.isArray(v) ? v.flatMap((item) => { const t = short(item); return t === undefined ? [] : [t]; }).slice(0, MAX_AGENT_METADATA_ITEMS) : undefined;
+	const bool = (v: unknown): boolean | undefined => typeof v === "boolean" ? v : undefined;
+	const name = short(value?.name);
+	if (name === undefined) fail("invalid-request");
+	const thinking = value.thinking === false ? false : short(value.thinking);
+	const chars = typeof value.systemPromptChars === "number" && Number.isSafeInteger(value.systemPromptChars) && value.systemPromptChars >= 0 ? value.systemPromptChars : undefined;
+	const fields = { name, source: short(value.source), tools: list(value.tools), excludeTools: list(value.excludeTools), skills: list(value.skills), mutationTools: list(value.mutationTools), allowedAgents: list(value.allowedAgents), allowNestedSubagents: bool(value.allowNestedSubagents), defaultContext: short(value.defaultContext), model: short(value.model), thinking, interactive: bool(value.interactive), systemPromptMode: short(value.systemPromptMode), systemPromptChars: chars };
+	return Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) as unknown as WorkerAgentMetadata;
+}
 function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionRequest {
 	const { control, facts, policyContext } = input;
 	if (!["fresh", "fork"].includes(control.context)) fail("invalid-request");
@@ -310,6 +343,7 @@ function snapshotRequest(input: PrepareWorkerDecisionInput): WorkerDecisionReque
 		...(facts.tools !== undefined ? { tools: snapshotToolList(facts.tools, true, "invalid-request") } : {}),
 		...(facts.callerTools !== undefined ? { callerTools: snapshotCallerTools(facts.callerTools) } : {}),
 		...(facts.role !== undefined ? { role: { ...(facts.role.name !== undefined ? { name: text(facts.role.name) } : {}), description: text(facts.role.description), provenance: facts.role.provenance } } : {}),
+		...(facts.agent !== undefined ? { agent: snapshotAgentMetadata(facts.agent) } : {}),
 		...(facts.capabilities !== undefined ? { capabilities: facts.capabilities.map(({ description, provenance }) => ({ description: text(description), provenance })) } : {}),
 	};
 	if (projected.role && !["resolved-agent", "authored-task"].includes(projected.role.provenance)) fail("invalid-request");

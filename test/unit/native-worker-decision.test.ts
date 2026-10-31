@@ -151,7 +151,10 @@ for (const source of ["project", "runtime"] as const) it(`NAT-NAME-${source}: re
 	let calls = 0;
 	const f = fixture({ async decide(request) {
 		calls++;
-		assert.deepEqual(request.facts, { task: "Review parser", role: { name: "package/specialized-reviewer", description: "", provenance: "resolved-agent" } });
+		const { agent, ...rest } = request.facts;
+		assert.deepEqual(rest, { task: "Review parser", role: { name: "package/specialized-reviewer", description: "", provenance: "resolved-agent" } });
+		assert.equal(agent?.name, "package/specialized-reviewer");
+		assert.doesNotMatch(JSON.stringify(request.facts), /PRIVATE (SYSTEM PROMPT|STEERING)|caller-label|junior/);
 		assert.equal(request.policyContext.original.kind, "verified");
 		if (request.policyContext.original.kind === "verified") assert.equal(request.policyContext.original.thinking, "high");
 		return selected;
@@ -177,4 +180,26 @@ it("host tool inventory excludes tools a child can never be granted", () => {
 	] as never);
 	assert.deepEqual((projected.availableTools ?? []).map((tool) => tool.name), ["grantable", "direct_tool", "codemode_tool", "deferred_tool"]);
 	assert.equal(projected.toolsIncomplete, false);
+});
+
+it("worker request carries bounded agent metadata and never the system prompt body", async () => {
+	let captured!: WorkerDecisionRequest;
+	const f = fixture({ async decide(request) { captured = request; return selected; } });
+	f.input.agent = { ...f.input.agent, name: "meta-agent", description: "Parser review", source: "project", tools: ["read", "grep"], excludeTools: ["powershell", "ninerouter_*"], skills: ["tdd"], allowNestedSubagents: false, mutationTools: ["edit"], defaultContext: "fresh", interactive: false, systemPrompt: "SECRET-BODY ".repeat(50), model: "fixture/original", thinking: "high" } as never;
+	try {
+		await prepareNativeWorkerDecision(f.input);
+		const agent = captured.facts.agent;
+		assert.ok(agent, "facts.agent is present");
+		assert.equal(agent.name, "meta-agent");
+		assert.equal(agent.source, "project");
+		assert.deepEqual(agent.tools, ["read", "grep"]);
+		assert.deepEqual(agent.excludeTools, ["powershell", "ninerouter_*"]);
+		assert.deepEqual(agent.skills, ["tdd"]);
+		assert.deepEqual(agent.mutationTools, ["edit"]);
+		assert.equal(agent.allowNestedSubagents, false);
+		assert.equal(agent.model, "fixture/original");
+		assert.equal(agent.thinking, "high");
+		assert.equal(agent.systemPromptChars, "SECRET-BODY ".repeat(50).length);
+		assert.doesNotMatch(JSON.stringify(captured.facts), /SECRET-BODY/);
+	} finally { f.registration.dispose(); }
 });

@@ -15,6 +15,7 @@ export {
 	type RegisterWorkerDecisionAuthorityInput,
 	type WorkerToolIdentity,
 	type WorkerToolMetadata,
+	type WorkerAgentMetadata,
 	type WorkerDecision,
 	type WorkerDecisionAuthority,
 	type WorkerDecisionAuthorityRegistration,

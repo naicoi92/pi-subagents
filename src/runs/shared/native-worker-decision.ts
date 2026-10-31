@@ -6,7 +6,7 @@ import { assertThinkingWithinCeiling, type ThinkingLevel } from "../../shared/th
 import {
 	getWorkerDecisionAuthoritySnapshot, prepareWorkerDecision, WorkerDecisionAuthorityError,
 	type AppliedWorkerDecision, type WorkerDecisionAuthoritySnapshot, type WorkerDecisionBaseline,
-	type WorkerDecisionHost, type WorkerDecisionPair, type WorkerDecisionPolicyContext, type WorkerToolMetadata, type WorkerToolIdentity,
+	type WorkerDecisionHost, type WorkerDecisionPair, type WorkerDecisionPolicyContext, type WorkerToolMetadata, type WorkerToolIdentity, type WorkerAgentMetadata,
 } from "../../shared/worker-decision-authority.ts";
 import { checkModelScope, type ResolvedModelScope } from "./model-scope.ts";
 
@@ -104,7 +104,7 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 	const request = {
 		sessionId: input.sessionId,
 		control: { logicalLaunchId: input.logicalLaunchId, runtimeAttemptId: randomUUID(), ownerGeneration: routing.generation, context: input.context, launchDeadline: deadlineAt },
-		facts: { task: input.task, ...(input.toolSelection !== undefined ? { toolSelection: input.toolSelection } : {}), ...(input.toolsIncomplete !== undefined ? { toolsIncomplete: input.toolsIncomplete } : {}), ...(input.availableTools !== undefined ? { tools: input.availableTools } : {}), ...(input.callerTools !== undefined ? { callerTools: input.callerTools } : {}), role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const } },
+		facts: { task: input.task, ...(input.toolSelection !== undefined ? { toolSelection: input.toolSelection } : {}), ...(input.toolsIncomplete !== undefined ? { toolsIncomplete: input.toolsIncomplete } : {}), ...(input.availableTools !== undefined ? { tools: input.availableTools } : {}), ...(input.callerTools !== undefined ? { callerTools: input.callerTools } : {}), role: { name: input.agent.name, description: input.agent.description, provenance: "resolved-agent" as const }, agent: projectAgentMetadata(input.agent) },
 		policyContext: { ...expected, modelContract, comparison: input.comparison, original: baseline(input.originalModel, input.originalThinking, input.originalProvenance) },
 		classifierTimeoutMs: routing.assessmentTimeoutMs, signal: input.signal, host,
 	};
@@ -138,6 +138,16 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 		},
 		async revalidate() { await prepare(); },
 	};
+}
+
+/** Declared agent metadata for assessment. Bounded by the authority snapshot; the system prompt is reduced to its length. */
+export function projectAgentMetadata(agent: AgentConfig): WorkerAgentMetadata {
+ return {
+  name: agent.name, source: agent.source, tools: agent.tools, excludeTools: agent.excludeTools, skills: agent.skills,
+  mutationTools: agent.mutationTools, allowedAgents: agent.allowedAgents, allowNestedSubagents: agent.allowNestedSubagents,
+  defaultContext: agent.defaultContext, model: agent.model, thinking: agent.thinking, interactive: agent.interactive,
+  systemPromptMode: agent.systemPromptMode, systemPromptChars: typeof agent.systemPrompt === "string" ? agent.systemPrompt.length : undefined,
+ };
 }
 
 /** Tools the child session can never be granted: hidden/model-only exposure, or registered inline rather than from a file. */
