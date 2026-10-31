@@ -140,12 +140,23 @@ export async function prepareNativeWorkerDecision(input: NativeWorkerDecisionInp
 	};
 }
 
-/** Omit structurally invalid host records (missing/empty/NUL fields). Size and count never exclude a tool. */
-export function projectHostToolMetadata(tools: readonly { name: string; description: string; namespace?: { name: string }; sourceInfo?: { path?: string } }[] | undefined): { availableTools?: WorkerToolMetadata[]; toolsIncomplete?: boolean } {
+/** Tools the child session can never be granted: hidden/model-only exposure, or registered inline rather than from a file. */
+function isGrantableHostTool(tool: { exposure?: string; sourceInfo?: { path?: string } }): boolean {
+ if (tool.exposure === "hidden" || tool.exposure === "model-only") return false;
+ const sourcePath = tool.sourceInfo?.path;
+ return sourcePath === undefined || !sourcePath.startsWith("<");
+}
+
+/**
+ * Omit structurally invalid host records (missing/empty/NUL fields). Size and count never exclude a tool.
+ * Tools the child can never be granted are left out too, so the inventory matches what a child can actually receive.
+ */
+export function projectHostToolMetadata(tools: readonly { name: string; description: string; exposure?: string; namespace?: { name: string }; sourceInfo?: { path?: string } }[] | undefined): { availableTools?: WorkerToolMetadata[]; toolsIncomplete?: boolean } {
  if (tools === undefined) return {};
  const availableTools: WorkerToolMetadata[] = [];
  let incomplete = false;
  for (const tool of tools) {
+  if (tool && !isGrantableHostTool(tool)) continue;
   const fields = [tool?.name, tool?.description, tool?.namespace?.name, tool?.sourceInfo?.path];
   if (fields.some((value, index) => value === undefined ? index < 2 : typeof value !== "string" || !value || value.includes("\0"))) { incomplete = true; continue; }
   availableTools.push({ name: tool.name, description: tool.description, ...(tool.namespace?.name !== undefined ? { namespace: tool.namespace.name } : {}), ...(tool.sourceInfo?.path !== undefined ? { sourcePath: tool.sourceInfo.path } : {}) });

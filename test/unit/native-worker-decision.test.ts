@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { readNativeWorkerAuthorityRouting } from "../../src/shared/native-worker-authority-routing.ts";
-import { prepareNativeWorkerDecision, type NativeWorkerDecisionInput } from "../../src/runs/shared/native-worker-decision.ts";
+import { prepareNativeWorkerDecision, projectHostToolMetadata, type NativeWorkerDecisionInput } from "../../src/runs/shared/native-worker-decision.ts";
 import { getWorkerDecisionAuthoritySnapshot, invalidateWorkerDecisionAuthority, registerWorkerDecisionAuthority, type WorkerDecisionAuthority, type WorkerDecisionRequest } from "../../src/api/worker-decision-authority.ts";
 
 let seq = 0;
@@ -162,4 +162,19 @@ for (const source of ["project", "runtime"] as const) it(`NAT-NAME-${source}: re
 		await prepared.revalidate();
 		assert.equal(calls, 1);
 	} finally { f.registration.dispose(); }
+});
+
+it("host tool inventory excludes tools a child can never be granted", () => {
+	const file = (name: string, exposure?: string) => ({ name, description: name, exposure, sourceInfo: { path: `/ext/${name}.ts` } });
+	const projected = projectHostToolMetadata([
+		file("grantable"),
+		file("direct_tool", "direct"),
+		file("codemode_tool", "codemode"),
+		file("deferred_tool", "deferred"),
+		file("model_only_tool", "model-only"),
+		file("hidden_tool", "hidden"),
+		{ name: "inline_tool", description: "inline", exposure: "direct", sourceInfo: { path: "<inline:pi-subagents:prompt-runtime>" } },
+	] as never);
+	assert.deepEqual((projected.availableTools ?? []).map((tool) => tool.name), ["grantable", "direct_tool", "codemode_tool", "deferred_tool"]);
+	assert.equal(projected.toolsIncomplete, false);
 });
