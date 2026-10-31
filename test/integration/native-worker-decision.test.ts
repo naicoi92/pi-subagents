@@ -1314,7 +1314,7 @@ for (const mode of ["missing-callable-api", "extra-callable"] as const) it(`actu
  } finally {registration.dispose();mock.uninstall();}
 });
 
-it("async launch result carries the worker launch receipt with the unavailable-tool-selection reason", async (t) => {
+it("async launch result carries the worker launch receipt without a false unavailable reason", async (t) => {
  const f = fixture();
  t.mock.method(childProcess, "spawn", () => { throw new Error("intercepted fixture spawn"); }); syncBuiltinESMExports();
  f.agent.tools = ["read", "grep"];
@@ -1326,6 +1326,6 @@ it("async launch result carries the worker launch receipt with the unavailable-t
   assert.match(text, /async\)/);
   assert.match(text, /Model: /);
   assert.match(text, /baseline\): read, grep/);
-  assert.match(text, /background launches do not support tool selection/);
+  assert.doesNotMatch(text, /do not support tool selection/);
  } finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
