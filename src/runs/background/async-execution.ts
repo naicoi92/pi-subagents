@@ -2106,6 +2106,7 @@ export function executeAsyncSingle(
 	const toolPlan = resolvePiLaunchToolPlan({
 		tools: agentConfig.tools,
 		callerTools: agentConfig.callerTools,
+		...(agentConfig.workerSelectedTools !== undefined ? { workerSelectedTools: [...agentConfig.workerSelectedTools] } : {}),
 		excludeTools: agentConfig.excludeTools,
 		allowNestedSubagents: agentConfig.allowNestedSubagents,
 		extensions: agentConfig.extensions,
@@ -2174,6 +2175,7 @@ export function executeAsyncSingle(
 		...(thinkingCeiling ? { thinkingCeiling } : {}),
 		...(recoveryAgentConfig.tools ? { tools: [...recoveryAgentConfig.tools] } : {}),
 		...(agentConfig.callerTools !== undefined ? { callerTools: [...agentConfig.callerTools] } : {}),
+		...(agentConfig.workerSelectedTools !== undefined ? { workerSelectedTools: agentConfig.workerSelectedTools.map((tool) => ({ ...tool })) } : {}),
 		...(agentConfig.workerToolWarnings?.length ? { workerToolWarnings: [...agentConfig.workerToolWarnings] } : {}),
 		...(recoveryAgentConfig.excludeTools ? { excludeTools: [...recoveryAgentConfig.excludeTools] } : {}),
 		...(recoveryAgentConfig.allowNestedSubagents !== undefined ? { allowNestedSubagents: recoveryAgentConfig.allowNestedSubagents } : {}),
@@ -2257,6 +2259,7 @@ export function executeAsyncSingle(
 						...(ctx.modelResponseAliases ? { modelResponseAliases: ctx.modelResponseAliases } : {}),
 						tools: agentConfig.tools,
 						callerTools: agentConfig.callerTools,
+						...(agentConfig.workerSelectedTools !== undefined ? { workerSelectedTools: agentConfig.workerSelectedTools.map((tool) => ({ ...tool })) } : {}),
 						workerToolWarnings: agentConfig.workerToolWarnings,
 						excludeTools: agentConfig.excludeTools,
 						allowNestedSubagents: agentConfig.allowNestedSubagents,

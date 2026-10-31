@@ -7875,7 +7875,7 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					logicalLaunchId: `${effectiveAsync ? asyncRunId : runId}:leaf:0`,
 					agent: nativeAgent, task: effectiveParams.task ?? "", callerTools,
 					toolSelection: (() => {
-						if (effectiveAsync || (effectiveParams.machine ?? nativeAgent.machine) || launchCapabilityCeiling()?.denyExtensions || !supportsWorkerToolSelection(nativeAgent)) return "unsupported";
+						if ((effectiveParams.machine ?? nativeAgent.machine) || launchCapabilityCeiling()?.denyExtensions || !supportsWorkerToolSelection(nativeAgent)) return "unsupported";
 						try {
 							const skills = normalizeSkillInput(effectiveParams.skill);
 							const resolved = resolveSkillsWithFallback(skills === false ? [] : skills ?? nativeAgent.skills ?? [], effectiveCwd, ctx.cwd, nativeAgent.skillPath, nativeAgent.filePath ? path.dirname(nativeAgent.filePath) : effectiveCwd);
@@ -7909,7 +7909,6 @@ export function createSubagentExecutor(deps: ExecutorDeps): {
 					},
 					admit(pair, _constraints, selectedTools) {
 						const additions = selectedTools?.length ? selectedTools : undefined;
-						if (additions && effectiveAsync) throw new Error("Worker tool selection is not supported for background launches.");
 						if (additions && (effectiveParams.machine ?? nativeAgent.machine)) throw new Error("Worker tool selection is not supported for remote launches.");
 						const ceiling = launchCapabilityCeiling();
 						assertAgentAllowedByCapabilityCeiling(nativeAgent.name, ceiling);

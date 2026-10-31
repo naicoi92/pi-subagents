@@ -827,6 +827,7 @@ export async function runSingleStepInner(
 		resolvedTaskToolPlan = resolvePiLaunchToolPlan(omitUndefinedProperties({
 			tools: step.tools,
 			callerTools: step.callerTools,
+			workerSelectedTools: step.workerSelectedTools,
 			excludeTools: step.excludeTools,
 			allowNestedSubagents: step.allowNestedSubagents,
 			extensions: step.extensions,
@@ -1163,6 +1164,7 @@ export async function runSingleStepInner(
 			const toolPlan = resolvedTaskToolPlan ?? resolvePiLaunchToolPlan(omitUndefinedProperties({
 				tools: step.tools,
 				callerTools: step.callerTools,
+				workerSelectedTools: step.workerSelectedTools,
 				excludeTools: step.excludeTools,
 				allowNestedSubagents: step.allowNestedSubagents,
 				extensions: step.extensions,

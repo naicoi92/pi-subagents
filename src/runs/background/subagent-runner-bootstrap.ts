@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeAtomicJson } from "../../shared/atomic-json.ts";
-import { isBoundedWorkerToolWarnings } from "../../shared/worker-decision-authority.ts";
+import { isBoundedWorkerSelectedTools, isBoundedWorkerToolWarnings } from "../../shared/worker-decision-authority.ts";
 import { acquireSessionLease } from "../shared/session-lease.ts";
 import { readProcessTerminalCandidate, writeProcessTerminalCandidate, markProcessTerminalCandidateLeaseRelease } from "./process-terminal-candidate.ts";
 import { persistRunnerStartupFailure } from "./runner-startup-failure.ts";
@@ -35,6 +35,9 @@ function validateChildStep(value: unknown, field: string): void {
 	}
 	if (typeof value.task !== "string") {
 		throw new Error(`Invalid runner configuration: '${field}.task' must be a string.`);
+	}
+	if (value.workerSelectedTools !== undefined && !isBoundedWorkerSelectedTools(value.workerSelectedTools)) {
+		throw new Error(`Invalid runner configuration: '${field}.workerSelectedTools' must contain bounded file-backed tool identities.`);
 	}
 	if (value.workerToolWarnings !== undefined && !isBoundedWorkerToolWarnings(value.workerToolWarnings)) {
 		throw new Error(`Invalid runner configuration: '${field}.workerToolWarnings' must contain bounded warnings.`);

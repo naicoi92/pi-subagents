@@ -52,6 +52,7 @@ export interface RunnerSubagentStep {
 	modelResponseAliases?: Record<string, string[]>;
 	tools?: string[];
 	callerTools?: string[];
+	workerSelectedTools?: readonly import("../../shared/worker-decision-authority.ts").WorkerToolIdentity[];
 	workerToolWarnings?: readonly string[];
 	/** Provider of `model` that a parent extension registers; set only when this child loads no ambient extensions. */
 	parentExtensionProvider?: string;

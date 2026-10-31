@@ -1,5 +1,6 @@
 import { isBoundedCallerTools } from "./caller-tools.ts";
 import { createHash, randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
 import { THINKING_LEVELS, type ThinkingLevel } from "./model-info.ts";
 
 export type WorkerDecisionReason = "assessed" | "verified-original-retained" | "verified-target-retained";
@@ -250,6 +251,27 @@ function snapshotPolicyContext(policy: WorkerDecisionPolicyContext): WorkerDecis
 }
 export function isBoundedWorkerToolWarnings(value: unknown): value is string[] {
 	return Array.isArray(value) && value.length <= 32 && value.every((item) => typeof item === "string" && !!item && !item.includes("\0") && Buffer.byteLength(item) <= 512);
+}
+/**
+ * Persisted selected-tool grants (runner config, recovery descriptor). Same bounds as the live
+ * decision snapshot, plus an absolute `sourcePath`: a grant without a file-backed source can never
+ * be honoured, so it is rejected at the persistence boundary instead of at child launch.
+ */
+export function isBoundedWorkerSelectedTools(value: unknown): value is WorkerToolIdentity[] {
+	if (!Array.isArray(value) || value.length > 256) return false;
+	let bytes = 0;
+	const bounded = (item: unknown): item is string => {
+		if (typeof item !== "string" || !item || item.includes("\0") || Buffer.byteLength(item) > 1024) return false;
+		bytes += Buffer.byteLength(item);
+		return true;
+	};
+	return value.every((entry) => {
+		if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+		const { name, namespace, sourcePath } = entry as Record<string, unknown>;
+		return bounded(name)
+			&& (namespace === undefined || bounded(namespace))
+			&& bounded(sourcePath) && isAbsolute(sourcePath);
+	}) && bytes <= 65536;
 }
 function snapshotToolWarnings(value: unknown): readonly string[] {
 	if (!isBoundedWorkerToolWarnings(value)) fail("invalid-decision");

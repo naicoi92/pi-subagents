@@ -854,6 +854,8 @@ export interface SteeringRecoveryDescriptor {
 	thinkingCeiling?: ThinkingLevel;
 	tools?: string[];
 	callerTools?: string[];
+	/** File-backed tools Jev selected for this launch; revived verbatim so resume keeps the grant. */
+	workerSelectedTools?: readonly import("./worker-decision-authority.ts").WorkerToolIdentity[];
 	workerToolWarnings?: readonly string[];
 	excludeTools?: string[];
 	allowNestedSubagents?: boolean;

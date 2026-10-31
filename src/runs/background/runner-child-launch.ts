@@ -51,6 +51,7 @@ export function buildRunnerChildLaunch(step: RunnerSubagentStep, ctx: RunnerChil
 		requireReadTool: Boolean(step.skills?.length),
 		tools: step.tools,
 		callerTools: step.callerTools,
+		...(step.workerSelectedTools !== undefined ? { workerSelectedTools: step.workerSelectedTools } : {}),
 		workerToolWarnings: step.workerToolWarnings,
 		excludeTools: step.excludeTools,
 		allowNestedSubagents: step.allowNestedSubagents,

@@ -126,7 +126,7 @@ it("reports unsupported selection when structured output is excluded", async () 
  });
 });
 
-it("reports unsupported selection for asynchronous launches", async () => {
+it("reports supported selection for asynchronous launches", async () => {
  const f = fixture(); f.agent.tools = ["read"];
  let observed: unknown;
  const registration = owner(f, { async decide(request) { observed = request.facts.toolSelection; return { kind: "apply", model: "fixture/target", thinking: "medium", reason: "assessed" }; } });
@@ -134,7 +134,7 @@ it("reports unsupported selection for asynchronous launches", async () => {
  try {
   const mock = t.mock.method(childProcess, "spawn", () => { throw new Error("captured spawn"); }); syncBuiltinESMExports();
   await f.executor.executeDelegated("async-fact", { agent: f.agent.name, task: "Work", async: true, artifacts: false, acceptance: false }, new AbortController().signal, undefined, f.ctx as any);
-  assert.equal(observed, "unsupported"); mock.mock.restore(); syncBuiltinESMExports();
+  assert.equal(observed, "supported"); mock.mock.restore(); syncBuiltinESMExports();
  } finally { registration.dispose(); }
 });
 
@@ -320,6 +320,38 @@ it("async authority warning reaches parent response and serialized child launch"
   assert.deepEqual(child.session.workerToolWarnings, ["Worker tool selection is unavailable."]);
   fs.rmSync(launchConfig.asyncDir, {recursive:true,force:true});
  } finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+it("async selected tools reach the runner config, recovery descriptor and child launch", async (t) => {
+ const f = fixture(); let launchConfig: any;
+ const source = path.join(f.root, "selected.mjs");
+ f.agent.tools = ["read"]; f.host.getAllTools = () => [{name:"plugin_selected",description:"Selected",sourceInfo:{path:source}}];
+ t.mock.method(childProcess, "spawn", (_command: string, args?: readonly string[], options?: childProcess.SpawnOptions) => {
+  launchConfig = JSON.parse(fs.readFileSync(String(options?.env?.PI_SUBAGENT_RUNNER_CONFIG ?? args?.at(-1)), "utf8"));
+  throw new Error("intercepted fixture spawn");
+ }); syncBuiltinESMExports();
+ const identity = {name:"plugin_selected",sourcePath:source};
+ const registration = owner(f, {async decide() {return {...selected, selectedTools:[identity]} as WorkerDecision;}});
+ try {
+  const result = await f.executor.execute("selected-async", {agent:f.agent.name, task:"Review", async:true, artifacts:false, acceptance:false}, new AbortController().signal, undefined, f.ctx as any);
+  assert.doesNotMatch(JSON.stringify(result.content), /not supported for background/);
+  assert.deepEqual(launchConfig.steps[0].workerSelectedTools, [identity]);
+  const descriptor = readAsyncRecoveryDescriptor(launchConfig.asyncDir)!;
+  assert.deepEqual(descriptor.workerSelectedTools, [identity]);
+  const { buildRunnerChildLaunch } = await import("../../src/runs/background/runner-child-launch.ts");
+  const child = buildRunnerChildLaunch(launchConfig.steps[0], {cwd:f.root,id:"selected-async",flatIndex:0}, {sessionEnabled:false,watchdogStatus:()=>{}});
+  assert.deepEqual(child.session.workerSelectedTools, [identity]);
+  fs.rmSync(launchConfig.asyncDir, {recursive:true,force:true});
+ } finally { registration.dispose(); t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+it("async resume rejects an unbounded selected tool descriptor", async () => {
+ const { readAsyncRecoveryDescriptor: read } = await import("../../src/runs/background/async-resume.ts");
+ const dir = fs.mkdtempSync(path.join(os.tmpdir(), "selected-descriptor-")); roots.push(dir);
+ for (const bad of [[{name:"x",sourcePath:"relative.ts"}], [{name:""}], "nope", Array.from({length:257},(_, i)=>({name:`t${i}`,sourcePath:"/a.ts"}))]) {
+  fs.writeFileSync(path.join(dir, "recovery-descriptor.json"), JSON.stringify({version:1, workerSelectedTools: bad}));
+  assert.throws(() => read(dir), /workerSelectedTools|Invalid async recovery descriptor/);
+ }
 });
 
 it("N02-async: actual direct async commits exact pair before descriptor and intercepted spawn", async (t) => {
@@ -1245,14 +1277,14 @@ for (const mode of ["implicit", "mcp", "async"] as const) it(`empty worker tool 
  } finally {registration.dispose();mock.uninstall();t.mock.restoreAll();syncBuiltinESMExports();}
 });
 
-for (const mode of ["implicit", "mcp", "codemode", "models", "async", "remote"] as const) it(`nonempty worker selection rejects ${mode} before receipt`, async () => {
+for (const mode of ["implicit", "mcp", "codemode", "models", "remote"] as const) it(`nonempty worker selection rejects ${mode} before receipt`, async () => {
  const f = fixture(); const mock = createMockPi(); mock.install(); mock.onCall({output:"done"});
  f.agent.tools = mode === "implicit" ? undefined : mode === "mcp" ? ["read","mcp__x__y"] : mode === "codemode" || mode === "models" ? ["read", mode] : ["read"];
  const source = path.join(f.root,"selected.mjs"); f.host.getAllTools = () => [{name:"selected",description:"Selected",sourceInfo:{path:source}}];
  let applied = 0;
  const registration = owner(f,{async decide(){return {...selected,selectedTools:[{name:"selected",sourcePath:source}]} as WorkerDecision;},onApplied(){applied++;}});
  try {
-  const result = await launch(f, mode === "async", undefined, mode === "remote" ? {machine:"fixture"} : {});
+  const result = await launch(f, false, undefined, mode === "remote" ? {machine:"fixture"} : {});
   assert.equal(result.isError,true); assert.equal(applied,0); assert.equal(mock.sessions.length,0);
   assert.equal(f.events.filter((event) => event.channel === "subagent:worker-decision-accepted").length,0);
  } finally {registration.dispose();mock.uninstall();}

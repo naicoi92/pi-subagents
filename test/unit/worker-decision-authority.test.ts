@@ -811,3 +811,20 @@ it("host admission receives immutable selected identities before commitment and 
   assert.deepEqual(getWorkerDecisionState(f.sessionId, "leaf-1"), {kind:"consumed", state:"blocked"});
  } finally {f.registration.dispose();}
 });
+
+it("persisted selected-tool grants require bounded, absolute, file-backed identities", async () => {
+	const { isBoundedWorkerSelectedTools } = await import("../../src/shared/worker-decision-authority.ts");
+	assert.equal(isBoundedWorkerSelectedTools([]), true);
+	assert.equal(isBoundedWorkerSelectedTools([{ name: "a", sourcePath: "/abs/a.ts" }, { name: "b", namespace: "ns", sourcePath: "/abs/b.ts" }]), true);
+	for (const bad of [
+		undefined, "nope", {}, [null], [[]],
+		[{ name: "a" }],
+		[{ name: "a", sourcePath: "relative.ts" }],
+		[{ name: "", sourcePath: "/abs/a.ts" }],
+		[{ name: "a", sourcePath: "/abs/\0a.ts" }],
+		[{ name: "a", namespace: "", sourcePath: "/abs/a.ts" }],
+		[{ name: "a".repeat(1025), sourcePath: "/abs/a.ts" }],
+		Array.from({ length: 257 }, (_, i) => ({ name: `t${i}`, sourcePath: "/abs/a.ts" })),
+		Array.from({ length: 70 }, (_, i) => ({ name: `t${i}`, sourcePath: `/${"p".repeat(1000)}` })),
+	]) assert.equal(isBoundedWorkerSelectedTools(bad), false, JSON.stringify(bad)?.slice(0, 80));
+});
